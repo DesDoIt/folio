@@ -1,0 +1,16 @@
+# Personal data - never commit
+kindle-backup/
+private/
+
+# Build outputs
+out/
+*.ext3
+*.img
+sim-out/
+
+# Python / OS junk
+__pycache__/
+*.pyc
+.DS_Store
+._*
+target/

@@ -1,0 +1,22 @@
+[package]
+name = "kos"
+version = "0.2.0"
+edition = "2021"
+description = "Kindle Linux: a small touch GUI for e-ink Kindles running Alpine Linux"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/DesDoIt/kindle-linux"
+readme = "README.md"
+
+[dependencies]
+libc = "0.2"
+fontdue = "0.9"
+vte = "0.13"
+png = "0.17"
+miniz_oxide = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "unwind"
+strip = true

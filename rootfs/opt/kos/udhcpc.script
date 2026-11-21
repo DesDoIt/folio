@@ -1,0 +1,17 @@
+#!/bin/sh
+# Minimal udhcpc hook: configure wlan0 address, default route and DNS.
+case "$1" in
+  deconfig)
+    ip addr flush dev "$interface"
+    ;;
+  bound|renew)
+    ip addr flush dev "$interface"
+    ip addr add "$ip/${mask:-24}" dev "$interface"
+    [ -n "$router" ] && { ip route del default 2>/dev/null; ip route add default via ${router%% *} dev "$interface"; }
+    if [ -n "$dns" ]; then
+      : > /etc/resolv.conf
+      for d in $dns; do echo "nameserver $d" >> /etc/resolv.conf; done
+    fi
+    ;;
+esac
+exit 0
