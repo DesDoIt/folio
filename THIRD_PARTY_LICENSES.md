@@ -47,8 +47,8 @@ When distributing a compiled binary, include this file and the licenses it refer
 
 ## Alpine Linux image
 
-`build/build.sh` downloads packages from the Alpine Linux v3.24 repositories (BusyBox, musl, curl, w3m,
-wpa_supplicant, dropbear, nano, htop and their dependencies) to assemble `out/kos-rootfs.ext3`.
+`build/build.sh` downloads packages from the Alpine Linux v3.24 repositories (BusyBox, musl, curl,
+wpa_supplicant, iw, dropbear, nano, htop and their dependencies) to assemble `out/kos-rootfs.ext3`.
 The image is **not** part of this repository. Those packages keep their own licenses (GPL-2.0, MIT, BSD
 and others; listed per package at https://pkgs.alpinelinux.org). If you distribute a built image, you
 must comply with those licenses, including offering the corresponding source for GPL packages, which

@@ -8,10 +8,10 @@ R=/rootfs
 M=https://dl-cdn.alpinelinux.org/alpine/$ALPINE_VER
 PKGS="
 alpine-baselayout alpine-keys alpine-release apk-tools busybox busybox-suid musl musl-utils ca-certificates ca-certificates-bundle tzdata
-curl w3m ncurses-terminfo-base font-droid-nonlatin
-wpa_supplicant wireless-tools iw
+curl ncurses-terminfo-base font-droid-nonlatin
+wpa_supplicant iw
 dropbear dropbear-scp openssh-sftp-server
-nano htop less file
+nano htop less
 "
 apk add --no-cache e2fsprogs alpine-keys >/dev/null
 rm -rf "$R"; mkdir -p "$R/etc/apk"

@@ -299,7 +299,7 @@ impl vte::Perform for Grid {
 }
 
 pub struct Terminal {
-    /// Shell command to run instead of an interactive shell (e.g. the w3m browser).
+    /// Shell command to run instead of an interactive shell.
     command: Option<String>,
     cwd: String,
     label: &'static str,

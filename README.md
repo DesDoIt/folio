@@ -31,7 +31,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 - **Reader**: built-in, for EPUB, TXT and saved web pages: full-screen pages, tap or swipe to turn, chapters,
   font sizes, position saved per book. Long-press a word to **define** it (English, online) or **highlight**
   its sentence
-- **Books**: your library; tap opens the reader, hold opens KOReader (PDF, comics, other formats)
+- **Books**: your library; tap opens the built-in reader (EPUB, TXT, saved pages) or, for other formats
+  (PDF, MOBI/AZW3, comics), KOReader; hold any book to open it in KOReader
 - **Get Books**: search/browse Project Gutenberg and Standard Ebooks, or download any EPUB link
 - **Send to Kindle**: open `http://<kindle-ip>:8080` on a phone or computer and upload books over Wi-Fi
 - **Highlights**: everything you highlighted, plus import of the Kindle's `My Clippings.txt`
@@ -108,7 +109,9 @@ tools/screenshots.sh      # regenerates docs/screenshots/
 
 ## Installing
 
-Requires a jailbroken Kindle (see kindlemodding.org). KOReader is optional (used for PDFs and comics).
+Requires a jailbroken Kindle (see kindlemodding.org). KOReader (installed with KPM) is optional: Kindle
+Linux uses it for PDFs, MOBI/AZW3 and comics. To keep it out of the stock Kindle's library, delete
+`documents/KOReader.sh`; Kindle Linux launches KOReader directly from `koreader/`.
 
 1. Connect the Kindle over USB and run `build/install.sh` (or copy by hand: `out/kos-rootfs.ext3`,
    `out/kos` and `host/kos-*.sh`, `host/kindle-linux.conf` to `kos/`, and `host/KindleLinux*.sh` to

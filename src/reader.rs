@@ -274,6 +274,17 @@ pub struct Reader {
     sel_word: Option<(usize, String)>,
     define_job: Option<Arc<Mutex<Option<Result<String, String>>>>>,
     last_turn: std::time::Instant,
+    menu: Vec<MenuAct>,
+}
+
+#[derive(Clone, Copy)]
+enum MenuAct {
+    Chapters,
+    FontSize,
+    SaveForLater,
+    KOReader,
+    Library,
+    Close,
 }
 
 const ID_WORD: u32 = 4;
@@ -296,7 +307,8 @@ impl Reader {
         let chapter = chapter.min(book.spine.len().saturating_sub(1));
         Reader { path: key.into(), book, chapter, pages: vec![], page: 0, fs, laid_out: None,
                  want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), save_html: None,
-                 words: vec![], sel_word: None, define_job: None, last_turn: std::time::Instant::now() }
+                 words: vec![], sel_word: None, define_job: None, last_turn: std::time::Instant::now(),
+                 menu: vec![] }
     }
 
     pub fn set_save_html(&mut self, html: String) {
@@ -429,10 +441,22 @@ impl App for Reader {
             ID_NEXT => self.next(sys),
             ID_PREV => self.prev(sys),
             ID_MENU => {
-                let mut items: Vec<String> = vec!["Chapters".into(), "Font size".into()];
-                items.push(if self.save_html.is_some() { "Save for later".into() } else { "Open in KOReader".into() });
-                items.push("Back to library".into());
-                items.push("Close menu".into());
+                self.menu = vec![MenuAct::Chapters, MenuAct::FontSize];
+                // in-memory articles can be saved; real book files can be opened in KOReader instead
+                if self.save_html.is_some() {
+                    self.menu.push(MenuAct::SaveForLater);
+                } else if std::path::Path::new(&self.path).is_file() {
+                    self.menu.push(MenuAct::KOReader);
+                }
+                self.menu.extend([MenuAct::Library, MenuAct::Close]);
+                let items: Vec<String> = self.menu.iter().map(|m| match m {
+                    MenuAct::Chapters => "Chapters",
+                    MenuAct::FontSize => "Font size",
+                    MenuAct::SaveForLater => "Save for later",
+                    MenuAct::KOReader => "Open in KOReader",
+                    MenuAct::Library => "Back to library",
+                    MenuAct::Close => "Close menu",
+                }.to_string()).collect();
                 let heading = if self.book.author.is_empty() { self.book.title.clone() }
                               else { format!("{} · {}", self.book.title, self.book.author) };
                 Cmd::Dialog(Dialog::menu(TAG_MENU, &heading, items))
@@ -469,25 +493,39 @@ impl App for Reader {
         if choice == CANCEL {
             return Cmd::None;
         }
+        let act = if tag == TAG_MENU { self.menu.get(choice).copied() } else { None };
         match (tag, choice) {
-            (TAG_MENU, 0) => {
-                let items: Vec<(String, usize)> = self.book.toc.iter().map(|c| (c.title.clone(), c.spine)).collect();
-                Cmd::Push(Box::new(Chapters::new(self.book.title.clone(), items, self.chapter, self.pick.clone())))
-            }
-            (TAG_MENU, 1) => Cmd::Dialog(Dialog::menu(TAG_FONT, "Font size",
-                FONT_SIZES.iter().map(|s| format!("{s} px{}", if *s == self.fs { "  ✓" } else { "" })).collect())),
-            (TAG_MENU, 2) if self.save_html.is_some() => {
-                let dir = format!("{}/documents/Saved pages", sys.us);
-                let _ = std::fs::create_dir_all(&dir);
-                let name: String = self.book.title.chars().map(|c| if "\\/:*?\"<>|".contains(c) { '-' } else { c }).take(80).collect();
-                match std::fs::write(format!("{dir}/{}.html", name.trim()), self.save_html.as_deref().unwrap_or("")) {
-                    Ok(()) => Cmd::Toast("Saved to Books → Saved pages".into()),
-                    Err(e) => Cmd::Toast(e.to_string()),
+            (TAG_MENU, _) => match act {
+                Some(MenuAct::Chapters) => {
+                    let items: Vec<(String, usize)> = self.book.toc.iter().map(|c| (c.title.clone(), c.spine)).collect();
+                    Cmd::Push(Box::new(Chapters::new(self.book.title.clone(), items, self.chapter, self.pick.clone())))
                 }
-            }
-            (TAG_MENU, 2) => {
-                self.save(sys);
-                open_koreader(sys, Some(&self.path.clone()))
+                Some(MenuAct::FontSize) => Cmd::Dialog(Dialog::menu(TAG_FONT, "Font size",
+                    FONT_SIZES.iter().map(|s| format!("{s} px{}", if *s == self.fs { "  ✓" } else { "" })).collect())),
+                Some(MenuAct::SaveForLater) => {
+                    let dir = format!("{}/documents/Saved pages", sys.us);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let name: String = self.book.title.chars().map(|c| if "\\/:*?\"<>|".contains(c) { '-' } else { c }).take(80).collect();
+                    match std::fs::write(format!("{dir}/{}.html", name.trim()), self.save_html.as_deref().unwrap_or("")) {
+                        Ok(()) => Cmd::Toast("Saved to Books → Saved pages".into()),
+                        Err(e) => Cmd::Toast(e.to_string()),
+                    }
+                }
+                Some(MenuAct::KOReader) => {
+                    self.save(sys);
+                    open_koreader(sys, Some(&self.path.clone()))
+                }
+                Some(MenuAct::Library) => Cmd::Pop,
+                Some(MenuAct::Close) | None => Cmd::Full,
+            },
+            (TAG_FONT, i) => {
+                if let Some(&s) = FONT_SIZES.get(i) {
+                    self.want_offset = Some(self.start_offset());
+                    self.fs = s;
+                    self.laid_out = None;
+                    sys.config.set("reader_font", &s.to_string());
+                }
+                Cmd::Full
             }
             (TAG_WORD, 0) => {
                 let Some((_, word)) = self.sel_word.clone() else { return Cmd::None };
@@ -511,16 +549,6 @@ impl App for Reader {
                 Cmd::Toast("Highlighted".into())
             }
             (TAG_WORD, _) => Cmd::None,
-            (TAG_MENU, 3) => Cmd::Pop,
-            (TAG_FONT, i) => {
-                if let Some(&s) = FONT_SIZES.get(i) {
-                    self.want_offset = Some(self.start_offset());
-                    self.fs = s;
-                    self.laid_out = None;
-                    sys.config.set("reader_font", &s.to_string());
-                }
-                Cmd::Full
-            }
             _ => Cmd::Full,
         }
     }
