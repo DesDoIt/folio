@@ -48,7 +48,9 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 - **Reading stats**: minutes and pages per day, streaks, books finished, a 14-day chart
 
 **Internet**
-- **News**: RSS/Atom feeds as a magazine: a front page with each feed's name, description and latest headline,
+- **News**: RSS/Atom feeds as a magazine, with Indian news by default (The Hindu, Indian Express, Times of India,
+  NDTV, Mint, LiveLaw, Bar & Bench, ESPNcricinfo) and **Browse feeds** to add more by topic; typing just a website
+  (e.g. `scroll.in`) finds its feed; reading view finds the article on cluttered pages: a front page with each feed's name, description and latest headline,
   and story cards with summary, author, time, reading time and pictures; articles open in the reader, full text fetched when feeds only carry summaries,
   "Save for later" for offline reading
 - **Wikipedia**: search or random article, sections become chapters, every opened article cached offline;

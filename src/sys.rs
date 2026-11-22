@@ -193,23 +193,39 @@ pub fn ip_address(sim: bool) -> Option<String> {
 // --- Config -----------------------------------------------------------------------
 pub struct Config {
     path: String,
+    /// Copy on the USB drive (without secrets), used if the main file is ever missing.
+    backup: String,
     pub values: BTreeMap<String, String>,
 }
+
+/// Settings that are secrets: kept only in the main config, never in the USB-drive copy.
+const SECRET_KEYS: &[&str] = &["sync_key"];
 
 impl Config {
     pub fn load(sim: bool) -> Config {
         let path = if sim { "/tmp/kos-sim-config".to_string() } else { format!("{STATE}/config") };
+        let backup = format!("{}/kos/settings.txt", userstore(sim));
         let mut values = BTreeMap::new();
         for (k, v) in [("full_refresh_every", "12"), ("timezone", "UTC"), ("ssh_autostart", "no"),
                        ("wifi_autostart", "yes")] {
             values.insert(k.to_string(), v.to_string());
         }
-        for line in read(&path).unwrap_or_default().lines() {
+        let main = read(&path).unwrap_or_default();
+        let text = if main.trim().is_empty() {
+            let b = read(&backup).unwrap_or_default();
+            if !b.trim().is_empty() {
+                log("config: main settings missing, restored from kos/settings.txt");
+            }
+            b
+        } else {
+            main
+        };
+        for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
                 values.insert(k.trim().to_string(), v.trim().to_string());
             }
         }
-        Config { path, values }
+        Config { path, backup, values }
     }
     pub fn get(&self, k: &str) -> &str {
         self.values.get(k).map(String::as_str).unwrap_or("")
@@ -224,6 +240,9 @@ impl Config {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(&self.path, body);
+        let public: String = self.values.iter().filter(|(k, _)| !SECRET_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| format!("{k}={v}\n")).collect();
+        let _ = std::fs::write(&self.backup, format!("# Kindle Linux settings (backup copy; safe to delete)\n{public}"));
     }
 }
 

@@ -12,12 +12,175 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Feeds on a fresh install (until the user changes the list).
 const DEFAULT_FEEDS: &[&str] = &[
+    "https://www.thehindu.com/feeder/default.rss",
+    "https://indianexpress.com/feed/",
+    "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+    "https://feeds.feedburner.com/ndtvnews-top-stories",
+    "https://www.livemint.com/rss/news",
+    "https://www.livelaw.in/google_feeds.xml",
+    "https://www.barandbench.com/stories.rss?time-period=last-24-hours",
+    "https://www.espncricinfo.com/rss/content/story/feeds/0.xml",
     "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://hnrss.org/frontpage",
-    "https://www.theguardian.com/books/rss",
-    "https://standardebooks.org/feeds/atom/new-releases",
 ];
+
+const DEFAULTS_VERSION: &str = "2";
+
+/// "Browse feeds": (category, name, description, address). Every address was checked to serve a feed.
+const CATALOG: &[(&str, &str, &str, &str)] = &[
+    ("India", "The Hindu", "Latest news from India and the world", "https://www.thehindu.com/feeder/default.rss"),
+    ("India", "The Hindu — National", "National headlines", "https://www.thehindu.com/news/national/feeder/default.rss"),
+    ("India", "The Indian Express", "News, politics, explainers", "https://indianexpress.com/feed/"),
+    ("India", "Times of India", "Top stories", "https://timesofindia.indiatimes.com/rssfeedstopstories.cms"),
+    ("India", "NDTV", "Top stories", "https://feeds.feedburner.com/ndtvnews-top-stories"),
+    ("India", "Hindustan Times", "India news", "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml"),
+    ("India", "India Today", "Latest news", "https://www.indiatoday.in/rss/home"),
+    ("India", "BBC News — India", "India coverage from the BBC", "https://feeds.bbci.co.uk/news/world/asia/india/rss.xml"),
+    ("India", "PIB", "Press Information Bureau releases", "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3"),
+    ("Business", "Mint", "Business and economy news", "https://www.livemint.com/rss/news"),
+    ("Business", "The Economic Times", "Top stories", "https://economictimes.indiatimes.com/rssfeedstopstories.cms"),
+    ("Business", "Business Standard", "Top stories", "https://www.business-standard.com/rss/home_page_top_stories.rss"),
+    ("Business", "BusinessLine", "From The Hindu group", "https://www.thehindubusinessline.com/feeder/default.rss"),
+    ("Business", "Moneycontrol", "Markets and finance", "https://www.moneycontrol.com/rss/latestnews.xml"),
+    ("Law & Opinion", "LiveLaw", "Supreme Court and High Court news", "https://www.livelaw.in/google_feeds.xml"),
+    // Bar & Bench's plain feed only ever holds the newest story; the 24-hour window holds the day's
+    ("Law & Opinion", "Bar & Bench", "Indian legal news, last 24 hours", "https://www.barandbench.com/stories.rss?time-period=last-24-hours"),
+    ("Law & Opinion", "The Hindu — Editorials", "The Hindu's editorials", "https://www.thehindu.com/opinion/editorial/feeder/default.rss"),
+    ("Sport", "ESPNcricinfo", "Cricket news", "https://www.espncricinfo.com/rss/content/story/feeds/0.xml"),
+    ("Science & Tech", "The Hindu — Sci-Tech", "Science and technology", "https://www.thehindu.com/sci-tech/feeder/default.rss"),
+    ("Science & Tech", "MediaNama", "Indian tech policy", "https://www.medianama.com/feed/"),
+    ("Science & Tech", "Ars Technica", "Technology, science, policy", "https://feeds.arstechnica.com/arstechnica/index"),
+    ("Science & Tech", "The Verge", "Technology news", "https://www.theverge.com/rss/index.xml"),
+    ("Science & Tech", "Hacker News", "Front page", "https://hnrss.org/frontpage"),
+    ("Science & Tech", "ScienceDaily", "Top science news", "https://www.sciencedaily.com/rss/top/science.xml"),
+    ("Science & Tech", "NASA", "News releases", "https://www.nasa.gov/news-release/feed/"),
+    ("World", "BBC News — World", "World news", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("World", "The Guardian — World", "World news", "https://www.theguardian.com/world/rss"),
+    ("World", "Al Jazeera", "Breaking and world news", "https://www.aljazeera.com/xml/rss/all.xml"),
+    ("World", "NPR News", "US and world news", "https://www.npr.org/rss/rss.php?id=1001"),
+    ("Books", "The Guardian — Books", "Reviews and book news", "https://www.theguardian.com/books/rss"),
+    ("Books", "Standard Ebooks", "Newest free ebooks", "https://standardebooks.org/feeds/atom/new-releases"),
+];
+
+fn categories() -> Vec<&'static str> {
+    let mut v: Vec<&str> = vec![];
+    for c in CATALOG {
+        if !v.contains(&c.0) {
+            v.push(c.0);
+        }
+    }
+    v
+}
+
+/// Browse suggested feeds by topic; one tap adds or removes a feed.
+pub struct FeedCatalog {
+    cat: usize,
+    pager: Pager,
+    urls: Vec<String>,
+}
+
+const C_CAT: u32 = 1_000_001;
+const C_ADD_OWN: u32 = 1_000_002;
+const TC_CAT: u32 = 1;
+const TC_ADD: u32 = 2;
+
+impl FeedCatalog {
+    pub fn new(sys: &Sys) -> FeedCatalog {
+        FeedCatalog { cat: 0, pager: Pager::new(78), urls: load_feed_urls(sys) }
+    }
+    fn items(&self) -> Vec<&'static (&'static str, &'static str, &'static str, &'static str)> {
+        let c = categories()[self.cat];
+        CATALOG.iter().filter(|x| x.0 == c).collect()
+    }
+}
+
+impl App for FeedCatalog {
+    fn title(&self) -> String {
+        "Browse feeds".into()
+    }
+
+    fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
+        let b = Btn::size(19);
+        let cats = categories();
+        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x0 + 330, a.y0 + 58), &format!("{} ▾", cats[self.cat]), Some(Hit::App(C_CAT)), b);
+        cx.button(Rect::new(a.x0 + 338, a.y0 + 10, a.x1 - 12, a.y0 + 58), "Other site…", Some(Hit::App(C_ADD_OWN)), b);
+        let items = self.items();
+        let urls = &self.urls;
+        self.pager.render(cx, Rect::new(a.x0, a.y0 + 70, a.x1, a.y1), items.len(), "", |cx, r, i| {
+            let (_, name, desc, url) = items[i];
+            let added = urls.iter().any(|u| u == url);
+            let t = cx.ellipsize(name, Face::Bold, 21, r.w() - 170);
+            cx.bold(r.x0 + 18, r.y0 + 14, &t, 21, BLACK, Anchor::LT);
+            let d = cx.ellipsize(desc, Face::Sans, 15, r.w() - 170);
+            cx.text(r.x0 + 18, r.y0 + 46, &d, 15, DARK, Anchor::LT);
+            cx.hit(r, Hit::App(i as u32), None, name);
+            cx.button(Rect::new(r.x1 - 140, r.cy() - 24, r.x1 - 14, r.cy() + 24), if added { "✓ Added" } else { "+ Add" },
+                      Some(Hit::App(i as u32)), Btn { inverted: !added, ..Btn::size(18) });
+        });
+    }
+
+    fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
+        if self.pager.action(id) {
+            return Cmd::Redraw;
+        }
+        match id {
+            C_CAT => Cmd::Dialog(Dialog::menu(TC_CAT, "Topic", categories().iter().map(|c| c.to_string()).collect())),
+            C_ADD_OWN => Cmd::Dialog(Dialog::input(TC_ADD, "Add a site or feed", "", "Add")
+                .with_message("Type a website, e.g. scroll.in. Kindle Linux finds its feed.")),
+            i => {
+                let Some(&(_, name, _, url)) = self.items().get(i as usize).copied() else { return Cmd::None };
+                let msg = if let Some(p) = self.urls.iter().position(|u| u == url) {
+                    self.urls.remove(p);
+                    format!("Removed {name}")
+                } else {
+                    self.urls.push(url.to_string());
+                    format!("Added {name}")
+                };
+                save_feed_urls(sys, &self.urls);
+                Cmd::Batch(vec![Cmd::Fast, Cmd::Toast(msg)])
+            }
+        }
+    }
+
+    fn dialog(&mut self, tag: u32, choice: usize, text: String, sys: &mut Sys) -> Cmd {
+        if choice == CANCEL {
+            return Cmd::None;
+        }
+        match tag {
+            TC_CAT => {
+                self.cat = choice.min(categories().len() - 1);
+                self.pager = Pager::new(78);
+                Cmd::Full
+            }
+            TC_ADD => match normalize_address(&text) {
+                Some(u) => {
+                    if !self.urls.contains(&u) {
+                        self.urls.push(u);
+                        save_feed_urls(sys, &self.urls);
+                    }
+                    // News finds the feed behind a website address when it refreshes
+                    Cmd::Batch(vec![Cmd::Pop, Cmd::Toast("Added. Looking for its feed…".into())])
+                }
+                None => Cmd::Dialog(Dialog::message("Not an address", "Enter a feed or website address, e.g. scroll.in")),
+            },
+            _ => Cmd::None,
+        }
+    }
+
+    fn gesture(&mut self, g: &Gesture, _sys: &mut Sys) -> Cmd {
+        if self.pager.swipe(g) { Cmd::Redraw } else { Cmd::None }
+    }
+}
+
+/// "thehindu.com" -> "https://thehindu.com"; None if it can't be an address.
+fn normalize_address(text: &str) -> Option<String> {
+    let u = text.trim();
+    if u.is_empty() || u.contains(' ') || !u.contains('.') {
+        return None;
+    }
+    Some(if u.starts_with("http://") || u.starts_with("https://") { u.to_string() } else { format!("https://{u}") })
+}
 
 #[derive(Clone, Default)]
 pub struct Item {
@@ -200,6 +363,65 @@ pub fn parse_feed(url: &str, xml: &str) -> Feed {
         feed.title = host(url);
     }
     feed
+}
+
+/// Fetch and parse a feed. If the address is a normal web page (people often paste the site's
+/// address), look for the feed it advertises (<link rel="alternate" type="application/rss+xml">).
+pub fn fetch_feed(url: &str) -> Result<Feed, String> {
+    let body = http_get(url)?;
+    if is_feed(&body) {
+        return Ok(parse_feed(url, &body));
+    }
+    let found = discover_feed(url, &body).ok_or_else(|| "This address isn't a feed, and the page doesn't link to one. \
+        Look for an RSS link on the site.".to_string())?;
+    let body = http_get(&found)?;
+    if !is_feed(&body) {
+        return Err("The page's feed link didn't return a feed.".into());
+    }
+    Ok(parse_feed(&found, &body))
+}
+
+fn is_feed(body: &str) -> bool {
+    let head: String = body.chars().take(4000).collect::<String>().to_ascii_lowercase();
+    head.contains("<rss") || head.contains("<feed") || head.contains("<rdf:rdf")
+}
+
+fn discover_feed(base: &str, html: &str) -> Option<String> {
+    let mut cands: Vec<(u8, String)> = vec![];
+    for t in tokenize(html) {
+        if let Tok::Open(n, a, _) = t {
+            if n == "body" {
+                break;
+            }
+            let ty = a.get("type").map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            if n == "link" && a.get("rel").map_or(false, |r| r.to_ascii_lowercase().contains("alternate")) {
+                let rank = if ty.contains("rss") { 0 } else if ty.contains("atom") { 1 } else { continue };
+                if let Some(h) = a.get("href") {
+                    cands.push((rank, h.clone()));
+                }
+            }
+        }
+    }
+    cands.sort_by_key(|c| c.0);
+    let href = decode_entities(&cands.first()?.1);
+    Some(resolve_url(base, &href))
+}
+
+fn resolve_url(base: &str, href: &str) -> String {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        return href.to_string();
+    }
+    let scheme = if base.starts_with("http://") { "http" } else { "https" };
+    if let Some(rest) = href.strip_prefix("//") {
+        return format!("{scheme}://{rest}");
+    }
+    let after = base.split("://").nth(1).unwrap_or(base);
+    let host = after.split('/').next().unwrap_or(after);
+    if href.starts_with('/') {
+        return format!("{scheme}://{host}{href}");
+    }
+    let dir = base.rsplit_once('/').map_or(base, |(d, _)| d);
+    format!("{dir}/{href}")
 }
 
 fn host(url: &str) -> String {
@@ -392,7 +614,7 @@ pub fn article_reader(it: &Item, page: Option<String>, sys: &Sys) -> Result<Read
 }
 
 enum Job {
-    Feed(Result<Feed, String>),
+    Feed(String, Result<Feed, String>),
     Article(Item, Option<String>),
 }
 
@@ -418,14 +640,26 @@ pub struct News {
 const ID_ADD: u32 = 1_000_001;
 const ID_BACK: u32 = 1_000_002;
 const ID_REFRESH: u32 = 1_000_003;
+const ID_BROWSE: u32 = 1_000_004;
 const T_ADD: u32 = 1;
 const T_REMOVE: u32 = 2;
 const FEED_ROW: i32 = 118;
 const CARD_ROW: i32 = 128;
 
 impl News {
-    pub fn new(sys: &Sys) -> News {
-        News { urls: load_feed_urls(sys), feed: None, pager: Pager::new(FEED_ROW), job: None, busy_label: None, sel: 0,
+    pub fn new(sys: &mut Sys) -> News {
+        // once per new set of defaults: add them to an existing list (people who set up News before
+        // the Indian feeds existed get them too; anything they removed later stays removed)
+        let mut urls = load_feed_urls(sys);
+        if sys.config.get("feed_defaults") != DEFAULTS_VERSION {
+            // new defaults go first, so they're on the front page
+            let mut merged: Vec<String> = DEFAULT_FEEDS.iter().filter(|d| !urls.iter().any(|u| u == *d)).map(|d| d.to_string()).collect();
+            merged.extend(urls);
+            urls = merged;
+            save_feed_urls(sys, &urls);
+            sys.config.set("feed_defaults", DEFAULTS_VERSION);
+        }
+        News { urls, feed: None, pager: Pager::new(FEED_ROW), job: None, busy_label: None, sel: 0,
                meta: load_meta(sys), loaded: HashMap::new(), refresh: None, refresh_left: 0, last_refresh: None,
                thumbs: Arc::new(Mutex::new(HashMap::new())), thumbs_running: Arc::new(AtomicBool::new(false)),
                thumbs_shown: 0, last_thumb_redraw: std::time::Instant::now() }
@@ -443,7 +677,10 @@ impl News {
     }
 
     fn open_feed(&mut self, url: String) {
-        self.spawn("Loading feed…", move || Job::Feed(http_get(&url).map(|x| parse_feed(&url, &x))));
+        self.spawn("Loading feed…", move || {
+            let r = fetch_feed(&url);
+            Job::Feed(url, r)
+        });
     }
 
     /// Refresh every feed in the background for the front page.
@@ -456,12 +693,23 @@ impl News {
         self.refresh_left = urls.len();
         std::thread::spawn(move || {
             for u in urls {
-                let r = http_get(&u).map(|x| parse_feed(&u, &x));
+                let r = fetch_feed(&u);
                 s2.lock().unwrap().push((u, r));
             }
         });
         self.refresh = Some(slot);
         self.last_refresh = Some(std::time::Instant::now());
+    }
+
+    /// A site address turned out to have a feed elsewhere: remember the feed's address instead.
+    fn adopt_url(&mut self, asked: &str, real: &str, sys: &Sys) {
+        if asked != real {
+            if let Some(u) = self.urls.iter_mut().find(|u| u.as_str() == asked) {
+                *u = real.to_string();
+                save_feed_urls(sys, &self.urls);
+                self.meta.remove(asked);
+            }
+        }
     }
 
     fn show_feed(&mut self, f: Feed) {
@@ -589,7 +837,13 @@ impl App for News {
         })
     }
 
-    fn on_show(&mut self, _sys: &mut Sys) {
+    fn on_show(&mut self, sys: &mut Sys) {
+        // the feed list may have changed in "Browse feeds"
+        let urls = load_feed_urls(sys);
+        if urls != self.urls {
+            self.urls = urls;
+            self.last_refresh = None;
+        }
         let stale = self.last_refresh.map_or(true, |t| t.elapsed().as_secs() > 15 * 60);
         if self.feed.is_none() && stale {
             self.refresh_all();
@@ -602,8 +856,9 @@ impl App for News {
             cx.button(Rect::new(a.x1 - 170, a.y0 + 8, a.x1 - 12, a.y0 + 56), "Refresh", Some(Hit::App(ID_REFRESH)), b);
             self.render_feed(cx, a);
         } else {
-            cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x1 - 12, a.y0 + 58), "+ Add feed", Some(Hit::App(ID_ADD)),
+            cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.cx() - 6, a.y0 + 58), "Browse feeds", Some(Hit::App(ID_BROWSE)),
                       Btn { inverted: true, ..b });
+            cx.button(Rect::new(a.cx() + 6, a.y0 + 10, a.x1 - 12, a.y0 + 58), "+ Add site", Some(Hit::App(ID_ADD)), b);
             let label = self.busy_label.clone().or_else(|| self.refresh.is_some().then(|| "Checking feeds…".to_string()));
             if let Some(l) = label {
                 cx.text(a.cx(), a.y0 + 80, &l, 16, DARK, Anchor::MM);
@@ -625,8 +880,9 @@ impl App for News {
                 self.refresh_left = self.refresh_left.saturating_sub(1);
                 match r {
                     Ok(f) => {
-                        self.meta.insert(u.clone(), meta_of(&f));
-                        self.loaded.insert(u, f);
+                        self.adopt_url(&u, &f.url, sys);
+                        self.meta.insert(f.url.clone(), meta_of(&f));
+                        self.loaded.insert(f.url.clone(), f);
                     }
                     Err(_) => self.meta.entry(u).or_default().error = true,
                 }
@@ -652,14 +908,15 @@ impl App for News {
         self.job = None;
         self.busy_label = None;
         match done {
-            Job::Feed(Ok(f)) => {
+            Job::Feed(asked, Ok(f)) => {
+                self.adopt_url(&asked, &f.url, sys);
                 self.meta.insert(f.url.clone(), meta_of(&f));
                 save_meta(sys, &self.meta);
                 self.loaded.insert(f.url.clone(), f.clone());
                 self.show_feed(f);
                 Cmd::Full
             }
-            Job::Feed(Err(e)) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Couldn't load feed", &e))]),
+            Job::Feed(_, Err(e)) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Couldn't load feed", &e))]),
             Job::Article(it, page) => match article_reader(&it, page, sys) {
                 Ok(r) => Cmd::Push(Box::new(r)),
                 Err(e) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Couldn't open article", &e))]),
@@ -667,7 +924,7 @@ impl App for News {
         }
     }
 
-    fn action(&mut self, id: u32, _long: bool, _sys: &mut Sys) -> Cmd {
+    fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
         if self.pager.action(id) {
             return Cmd::Redraw;
         }
@@ -675,7 +932,8 @@ impl App for News {
             return Cmd::Toast("Still loading…".into());
         }
         match id {
-            ID_ADD => Cmd::Dialog(Dialog::input(T_ADD, "Add feed", "https://", "Add").with_message("RSS or Atom feed address")),
+            ID_BROWSE => Cmd::Push(Box::new(FeedCatalog::new(sys))),
+            ID_ADD => Cmd::Dialog(Dialog::input(T_ADD, "Add a site or feed", "", "Add").with_message("Just the website works, e.g. thehindu.com")),
             ID_BACK => {
                 self.feed = None;
                 self.pager = Pager::new(FEED_ROW);
@@ -726,10 +984,9 @@ impl App for News {
         }
         match tag {
             T_ADD => {
-                let u = text.trim().to_string();
-                if !u.starts_with("http") {
-                    return Cmd::Dialog(Dialog::message("Not a feed address", "Enter a full http(s):// address."));
-                }
+                let Some(u) = normalize_address(&text) else {
+                    return Cmd::Dialog(Dialog::message("Not an address", "Enter a feed or website address, e.g. thehindu.com"));
+                };
                 self.urls.push(u.clone());
                 save_feed_urls(sys, &self.urls);
                 self.open_feed(u);
@@ -784,6 +1041,18 @@ mod tests {
         let atom = r#"<feed><title>Blog</title><subtitle>Notes</subtitle><entry><title>E</title><author><name>C. Writer</name></author>
             <updated>2026-11-21T09:00:00Z</updated><summary>Short</summary></entry></feed>"#;
         let f = parse_feed("http://b/atom", atom);
+        assert_eq!(f.items.len(), 1);
         assert_eq!((f.description.as_str(), f.items[0].author.as_str(), f.items[0].summary.as_str()), ("Notes", "C. Writer", "Short"));
+    }
+
+    #[test]
+    fn discovery() {
+        let html = r#"<html><head><link rel="alternate" type="application/atom+xml" href="/atom.xml">
+            <link rel="alternate" type="application/rss+xml" title="News" href="/google_feeds.xml"></head><body></body></html>"#;
+        assert_eq!(discover_feed("https://www.example.in/", html).as_deref(), Some("https://www.example.in/google_feeds.xml"));
+        assert_eq!(resolve_url("https://a.org/x/y.html", "feed.xml"), "https://a.org/x/feed.xml");
+        assert_eq!(resolve_url("https://a.org/x/", "//cdn.b.org/f"), "https://cdn.b.org/f");
+        assert!(is_feed("<?xml version=\"1.0\"?><rss version=\"2.0\">"));
+        assert!(!is_feed("<!DOCTYPE html><html>"));
     }
 }

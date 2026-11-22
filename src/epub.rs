@@ -204,7 +204,28 @@ pub fn tokenize(src: &str) -> Vec<Tok<'_>> {
                 Some(p) => (&inner[..p], &inner[p..]),
                 None => (inner, ""),
             };
-            out.push(Tok::Open(local_name(name), parse_attrs(rest), self_closing));
+            let lname = local_name(name);
+            let raw = !self_closing && (lname == "script" || lname == "style");
+            out.push(Tok::Open(lname.clone(), parse_attrs(rest), self_closing));
+            if raw {
+                // script/style contents are plain text: jump to the real closing tag (a "<script" or
+                // "</div>" inside JavaScript strings must not count as markup)
+                let close = format!("</{lname}");
+                let mut j = i;
+                let end = loop {
+                    match src[j..].find("</") {
+                        Some(k) => {
+                            let at = j + k;
+                            if src[at..].len() >= close.len() && src[at..at + close.len()].eq_ignore_ascii_case(&close) {
+                                break at;
+                            }
+                            j = at + 2;
+                        }
+                        None => break b.len(),
+                    }
+                };
+                i = end;
+            }
         } else {
             let end = src[i..].find('<').map_or(b.len(), |e| i + e);
             out.push(Tok::Text(&src[i..end]));
@@ -418,25 +439,218 @@ pub fn html_to_full(html: &str) -> Doc {
 /// `reader_view` keeps only <article>/<main> when present and drops nav/header/footer/aside.
 pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
     let (blocks, links, _) = html_to_doc_inner(html, reader_view);
+    if reader_view {
+        // Some news sites only put the article in their search-engine metadata (JSON-LD articleBody)
+        // and fill the page with scripts. Use it when it has clearly more text than the page.
+        let shown: usize = blocks.iter().map(|b| b.chars()).sum();
+        if let Some(body) = jsonld_article_body(html) {
+            let n = body.chars().count();
+            if n >= 400 && n as f32 > shown as f32 * 1.3 {
+                return (article_text_blocks(&body), vec![]);
+            }
+        }
+    }
     (blocks, links)
+}
+
+/// The longest JSON-LD "articleBody" string in a page, decoded (scanned by hand: these JSON blobs
+/// are often not strictly valid).
+pub fn jsonld_article_body(html: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    let mut rest = html;
+    while let Some(k) = rest.find("\"articleBody\"") {
+        rest = &rest[k + 13..];
+        let t = rest.trim_start();
+        let Some(t) = t.strip_prefix(':') else { continue };
+        let t = t.trim_start();
+        let Some(t) = t.strip_prefix('"') else { continue };
+        let mut out = String::new();
+        let mut chars = t.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') | Some('r') => out.push(' '),
+                    Some('u') => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                            out.push(ch);
+                        }
+                    }
+                    Some(o) => out.push(o),
+                    None => break,
+                },
+                c => out.push(c),
+            }
+        }
+        if best.as_ref().map_or(true, |b| out.len() > b.len()) {
+            best = Some(out);
+        }
+    }
+    let body = decode_entities(&best?);
+    // it may itself be HTML
+    let body = if body.contains("<p") || body.contains("<br") {
+        html_to_doc(&body, false).0.iter().map(|b| b.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            .collect::<Vec<_>>().join("\n")
+    } else {
+        body
+    };
+    Some(body.trim().to_string())
+}
+
+/// Plain text to paragraphs: on line breaks, or (when the text has none) where one sentence runs
+/// straight into the next without a space ("…assistance.“At the age…"), as JSON-LD bodies often do.
+fn article_text_blocks(text: &str) -> Vec<Block> {
+    let mut paras: Vec<String> = vec![];
+    if text.contains('\n') {
+        paras = text.split('\n').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+    } else {
+        let chars: Vec<char> = text.chars().collect();
+        let mut cur = String::new();
+        for (i, &c) in chars.iter().enumerate() {
+            cur.push(c);
+            let next = chars.get(i + 1).copied();
+            let ends = matches!(c, '.' | '?' | '!' | '”' | '"' | ')');
+            if ends && next.map_or(false, |n| n.is_uppercase() || n == '“') && cur.len() > 40 {
+                // "U.S." / "Mr.X" style abbreviations: only split when the previous char isn't uppercase
+                let prev = if i > 0 { chars[i - 1] } else { ' ' };
+                if !(c == '.' && prev.is_uppercase()) {
+                    paras.push(std::mem::take(&mut cur).trim().to_string());
+                }
+            }
+        }
+        if !cur.trim().is_empty() {
+            paras.push(cur.trim().to_string());
+        }
+    }
+    let mut off = 0;
+    paras.into_iter().map(|p| {
+        let b = Block { kind: BlockKind::Para, runs: vec![Run { text: p, bold: false, italic: false, link: None }], start: off };
+        off += b.chars();
+        b
+    }).collect()
+}
+
+/// Reading view: find the element holding the article, Readability-style. Every paragraph scores
+/// for its parent (and half for its grandparent) by length and commas; class/id names like "article"
+/// or "story-body" boost a candidate, names like "comment", "subscribe" or "sidebar" sink it.
+/// Returns the token range (open..=close) of the best element.
+pub fn main_content(toks: &[Tok]) -> Option<(usize, usize)> {
+    const VOID: &[&str] = &["img", "br", "hr", "meta", "link", "input", "source", "wbr", "area", "col", "base", "embed", "param", "track"];
+    const SKIP: &[&str] = &["script", "style", "noscript", "svg", "template", "head", "nav", "header", "footer", "aside", "form", "button", "select"];
+    struct El { name: String, start: usize, score: f32, weight: f32 }
+    let weight_of = |attrs: &HashMap<String, String>, name: &str| -> f32 {
+        let key = format!("{} {} {}", attrs.get("class").map_or("", |s| s.as_str()), attrs.get("id").map_or("", |s| s.as_str()),
+                          attrs.get("itemprop").map_or("", |s| s.as_str())).to_ascii_lowercase();
+        let mut w = 1.0;
+        if key.contains("articlebody") || key.contains("article-body") || key.contains("story-body") || key.contains("entry-content")
+            || key.contains("post-content") || key.contains("article-content") || key.contains("story-content") {
+            w *= 2.5;
+        } else if ["article", "content", "story", "entry", "post", "text", "body", "main"].iter().any(|k| key.contains(k)) {
+            w *= 1.4;
+        }
+        if ["comment", "subscri", "login", "account", "footer", "header", "menu", "sidebar", "related", "promo", "share",
+            "social", "newsletter", "advert", "banner", "popup", "modal", "paywall", "cookie", "trending", "recommend", "widget"]
+            .iter().any(|k| key.contains(k)) {
+            w *= 0.15;
+        }
+        if name == "article" || name == "main" {
+            w *= 1.3;
+        }
+        w
+    };
+    let mut stack: Vec<El> = vec![];
+    let mut skip: Vec<String> = vec![]; // open skipped elements; their contents (scripts!) are ignored
+    let mut para: Option<(usize, usize, usize)> = None; // (stack depth of <p>, chars, commas)
+    let mut best: Option<(f32, usize, usize)> = None;
+    for (i, t) in toks.iter().enumerate() {
+        if let Some(top) = skip.last() {
+            match t {
+                Tok::Close(n) if n == top => {
+                    skip.pop();
+                }
+                Tok::Open(n, _, false) if n == top => skip.push(n.clone()),
+                _ => {}
+            }
+            continue;
+        }
+        match t {
+            Tok::Open(n, a, sc) => {
+                if SKIP.contains(&n.as_str()) && !sc {
+                    skip.push(n.clone());
+                    continue;
+                }
+                if *sc || VOID.contains(&n.as_str()) {
+                    continue;
+                }
+                if n == "p" {
+                    para = Some((stack.len(), 0, 0));
+                }
+                let w = weight_of(a, n);
+                stack.push(El { name: n.clone(), start: i, score: 0.0, weight: w });
+            }
+            Tok::Text(x) => {
+                if let Some(p) = para.as_mut() {
+                    p.1 += x.trim().chars().count();
+                    p.2 += x.matches(',').count();
+                } else {
+                    // long text straight inside a container (sites that use <div> + <br> instead of <p>)
+                    let len = x.trim().chars().count();
+                    if len >= 80 {
+                        if let Some(top) = stack.last_mut() {
+                            top.score += 1.0 + (len as f32 / 100.0).min(3.0) + x.matches(',').count() as f32;
+                        }
+                    }
+                }
+            }
+            Tok::Close(n) => {
+                let Some(pos) = stack.iter().rposition(|e| &e.name == n) else { continue };
+                while stack.len() > pos {
+                    let e = stack.pop().unwrap();
+                    if e.name == "p" {
+                        if let Some((d, len, commas)) = para.take().filter(|p| p.0 == stack.len()) {
+                            let _ = d;
+                            if len >= 25 {
+                                let s = 1.0 + commas as f32 + (len as f32 / 100.0).min(3.0);
+                                if let Some(parent) = stack.last_mut() {
+                                    parent.score += s;
+                                }
+                                if stack.len() >= 2 {
+                                    let gp = stack.len() - 2;
+                                    stack[gp].score += s / 2.0;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    let total = e.score * e.weight;
+                    if total > best.map_or(0.0, |b| b.0) {
+                        best = Some((total, e.start, i));
+                    }
+                }
+            }
+        }
+    }
+    best.filter(|b| b.0 >= 8.0).map(|b| (b.1, b.2))
 }
 
 fn html_to_doc_inner(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>, HashMap<String, usize>) {
     let mut b = Builder::new();
     let mut skip = 0u32; // inside head/script/style
     let body_start = html.find("<body").unwrap_or(0);
-    let mut src = &html[body_start..];
-    if reader_view {
-        for tag in ["<article", "<main"] {
-            if let Some(i) = src.find(tag) {
-                src = &src[i..];
-                break;
-            }
-        }
-    }
+    let src = &html[body_start..];
     let junk: &[&str] = if reader_view { &["head", "script", "style", "title", "nav", "header", "footer", "aside", "form", "noscript", "svg", "button", "select"] }
                         else { &["head", "script", "style", "title", "noscript", "svg", "select"] };
-    for tok in tokenize(src) {
+    let mut toks = tokenize(src);
+    if reader_view {
+        // keep only the element that holds the article text
+        if let Some((a, z)) = main_content(&toks) {
+            toks.truncate(z + 1);
+            toks.drain(..a);
+        }
+    }
+    for tok in toks {
         match tok {
             Tok::Open(name, attrs, sc) => {
                 if let Some(id) = attrs.get("id").or_else(|| if name == "a" { attrs.get("name") } else { None }) {
@@ -911,5 +1125,32 @@ mod tests {
         assert_eq!(links, vec!["/wiki/Ōsaka".to_string()]);
         let text: String = blocks[0].runs.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(text, "東京 & 大阪 — à");
+    }
+
+    #[test]
+    fn script_contents_are_not_markup() {
+        let html = r#"<body><script>document.write('<script src=x></script'+'>'); var s = "</div><p>";</script><p>Real text</p></body>"#;
+        let (blocks, _) = html_to_doc(html, false);
+        let text: String = blocks.iter().flat_map(|b| b.runs.iter().map(|r| r.text.clone())).collect();
+        assert_eq!(text.trim(), "Real text");
+    }
+
+    #[test]
+    fn reading_view_picks_the_article() {
+        let para = "<p>This is a long sentence of the actual story, with commas, and enough words to count as a paragraph.</p>";
+        let html = format!(r#"<body><article class="account-widget"><p>You are logged in</p><p>Subscribe now to read premium stories, editorials and more.</p></article>
+            <div class="articlebodycontent"><div>{0}{0}{0}{0}</div></div><div class="related"><p>Other story headline here, read it.</p></div></body>"#, para);
+        let (blocks, _) = html_to_doc(&html, true);
+        assert_eq!(blocks.len(), 4);
+        assert!(blocks[0].runs[0].text.starts_with("This is a long sentence"));
+    }
+
+    #[test]
+    fn reading_view_falls_back_to_json_ld() {
+        let html = r#"<html><head><script type="application/ld+json">{"@type":"NewsArticle","articleBody":"The court said the owner may live alone, peacefully and with dignity, in the house he bought.\u201cAt 85, he is entitled to peace,\u201d the judge observed in the order on Friday.The case concerned a long family dispute over a house in the city that had gone on for years and years without end, through several courts, appeals and hearings, with the family unable to agree on anything at all, until the High Court finally settled it in a detailed judgment that ran to many pages and cited earlier cases."}</script></head>
+            <body><nav>Home / Courts</nav><p>Please register.</p></body></html>"#;
+        let (blocks, _) = html_to_doc(html, true);
+        assert_eq!(blocks.len(), 3, "{:?}", blocks.iter().map(|b| b.runs[0].text.clone()).collect::<Vec<_>>());
+        assert!(blocks[1].runs[0].text.starts_with('“'));
     }
 }

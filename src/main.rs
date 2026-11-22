@@ -979,9 +979,17 @@ fn sim_main(out: &str) -> i32 {
     let feed = format!("file://{}/kos/sample-feed.xml", s.m.sys.us);
     let _ = std::fs::write(format!("{}/kos/sample-feed.xml", s.m.sys.us), xml);
     let _ = std::fs::write(format!("{}/kos/feeds.txt", s.m.sys.us), format!("{feed}\nhttps://hnrss.org/frontpage\n"));
+    s.m.sys.config.set("feed_defaults", "2"); // keep the sample feed list as written
     s.tap("News");
     s.wait_idle(60);
     s.shot("news-feeds");
+    s.tap("Browse feeds");
+    s.shot("news-browse");
+    s.tap("India ▾");
+    s.tap("Law & Opinion");
+    s.shot("news-browse-law");
+    s.tap("‹");
+    s.wait_idle(60);
     s.tap("Example Gazette");
     s.wait_idle(60);
     s.dismiss();
