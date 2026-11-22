@@ -30,9 +30,32 @@ fn cache_file(sys: &Sys, lang: &str, title: &str) -> String {
     format!("{}/{lang} - {safe}.html", cache_dir(sys))
 }
 
-/// Article HTML -> chapters (one per h2 section; the intro is "Introduction").
-fn split_sections(title: &str, html: &str) -> Vec<(String, Vec<Block>)> {
-    let (blocks, _) = html_to_doc(html, false);
+/// Remove citation markers (`<sup class="reference">[12]</sup>`, "[citation needed]"): they point
+/// at the References section, which isn't kept.
+fn strip_citations(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find("<sup") {
+        out.push_str(&rest[..i]);
+        let tag_end = rest[i..].find('>').map(|e| i + e + 1).unwrap_or(rest.len());
+        let tag = &rest[i..tag_end];
+        let close = rest[tag_end..].find("</sup>").map(|e| tag_end + e + 6);
+        match close {
+            Some(c) if tag.contains("reference") || tag.contains("Inline-Template") || tag.contains("noprint") => rest = &rest[c..],
+            _ => {
+                out.push_str(tag);
+                rest = &rest[tag_end..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Article HTML -> chapters (one per h2 section; the intro is "Introduction") and the link targets.
+fn split_sections(title: &str, html: &str) -> (Vec<(String, Vec<Block>)>, Vec<String>) {
+    let html = strip_citations(html);
+    let (blocks, links) = html_to_doc(&html, false);
     let mut chapters: Vec<(String, Vec<Block>)> = vec![("Introduction".into(), vec![Block {
         kind: BlockKind::Heading(1),
         runs: vec![crate::epub::Run { text: title.into(), bold: true, italic: false, link: None }], start: 0 }])];
@@ -60,7 +83,48 @@ fn split_sections(title: &str, html: &str) -> Vec<(String, Vec<Block>)> {
             off += b.chars();
         }
     }
-    chapters
+    (chapters, links)
+}
+
+/// Namespaces that aren't articles (files, help pages, categories...): those open in the Web app.
+const NOT_ARTICLES: [&str; 14] = ["File:", "Image:", "Special:", "Help:", "Category:", "Wikipedia:", "Template:",
+    "Portal:", "Talk:", "User:", "Module:", "MediaWiki:", "Draft:", "Template talk:"];
+
+/// `https://hi.wikipedia.org/wiki/Title` (or the mobile site) -> ("hi", "Title").
+pub fn article_link(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let (host, path) = rest.split_once('/')?;
+    let lang = host.strip_suffix(".wikipedia.org")?.trim_end_matches(".m");
+    if lang.is_empty() || lang.contains('.') {
+        return None;
+    }
+    let raw = path.strip_prefix("wiki/")?;
+    let raw = raw.split(['#', '?']).next()?;
+    let title = crate::web::percent_decode(raw).replace('_', " ");
+    if title.is_empty() || NOT_ARTICLES.iter().any(|n| title.starts_with(n)) {
+        return None;
+    }
+    Some((lang.to_string(), title))
+}
+
+/// Open a Wikipedia article from a link: the saved copy if there is one, else load it first.
+pub fn open_article(lang: &str, title: &str, sys: &Sys) -> Cmd {
+    if let Ok(html) = std::fs::read_to_string(cache_file(sys, lang, title)) {
+        return Cmd::Push(Box::new(article_reader(lang, title, &html, sys)));
+    }
+    let mut w = Wiki::new(sys);
+    w.lang = lang.to_string();
+    w.replace = true;
+    w.open(title.to_string(), sys);
+    Cmd::Push(Box::new(w))
+}
+
+fn article_reader(lang: &str, title: &str, html: &str, sys: &Sys) -> Reader {
+    let (chapters, links) = split_sections(title, html);
+    let book = Book::from_blocks(title, "Wikipedia", chapters).with_links(links);
+    let mut r = Reader::with_book(book, &format!("wiki:{lang}:{title}"), sys);
+    r.set_base_url(&format!("https://{lang}.wikipedia.org/wiki/{}", enc(title)));
+    r
 }
 
 fn fetch_article(lang: &str, title: &str) -> Result<String, String> {
@@ -94,6 +158,10 @@ pub struct Wiki {
     pager: Pager,
     job: Option<Arc<Mutex<Option<Job>>>>,
     busy: Option<String>,
+    /// opened from a link: show the article in place of this screen when it arrives
+    replace: bool,
+    /// the saved article a ⋯ menu is open for
+    menu_for: Option<usize>,
 }
 
 const ID_SEARCH: u32 = 1_000_001;
@@ -102,11 +170,14 @@ const ID_LANG: u32 = 1_000_003;
 const ID_SAVED: u32 = 1_000_004;
 const T_SEARCH: u32 = 1;
 const T_LANG: u32 = 2;
+const T_SAVED_MENU: u32 = 3;
+const T_DELETE: u32 = 4;
+const ID_MORE: u32 = 0x8000_0000;
 
 impl Wiki {
     pub fn new(sys: &Sys) -> Wiki {
         let lang = Some(sys.config.get("wiki_lang").to_string()).filter(|l| !l.is_empty()).unwrap_or_else(|| "en".into());
-        Wiki { lang, query: None, results: vec![], saved: vec![], pager: Pager::new(62), job: None, busy: None }
+        Wiki { lang, query: None, results: vec![], saved: vec![], pager: Pager::new(62), job: None, busy: None, replace: false, menu_for: None }
     }
 
     fn spawn(&mut self, label: &str, f: impl FnOnce() -> Job + Send + 'static) {
@@ -146,9 +217,14 @@ impl Wiki {
     }
 
     fn reader(&self, title: &str, html: &str, sys: &Sys) -> Cmd {
-        let chapters = split_sections(title, html);
-        let book = Book::from_blocks(title, "Wikipedia", chapters);
-        Cmd::Push(Box::new(Reader::with_book(book, &format!("wiki:{}:{title}", self.lang), sys)))
+        let r = Box::new(article_reader(&self.lang, title, html, sys));
+        if self.replace { Cmd::Batch(vec![Cmd::Pop, Cmd::Push(r)]) } else { Cmd::Push(r) }
+    }
+
+    /// Saved entries are "<lang> - <title>".
+    fn saved_entry(&self, i: usize) -> Option<(String, String)> {
+        let n = self.saved.get(i)?;
+        Some(n.split_once(" - ").map(|(l, t)| (l.to_string(), t.to_string())).unwrap_or((self.lang.clone(), n.clone())))
     }
 }
 
@@ -178,10 +254,16 @@ impl App for Wiki {
         }
         let list: &Vec<String> = if self.query.is_some() { &self.results } else { &self.saved };
         let empty = if self.query.is_some() { "No results" } else { "Articles you open are kept here" };
+        let saved_list = self.query.is_none();
         self.pager.render(cx, Rect::new(a.x0, a.y0 + 102, a.x1, a.y1), list.len(), empty, |cx, r, i| {
-            let t = cx.ellipsize(&list[i], Face::Sans, 20, r.w() - 40);
+            let t = cx.ellipsize(&list[i], Face::Sans, 20, r.w() - if saved_list { 100 } else { 40 });
             cx.text(r.x0 + 20, r.cy(), &t, 20, BLACK, Anchor::LM);
-            cx.hit(r, Hit::App(i as u32), None, &list[i]);
+            if saved_list {
+                cx.hit(r, Hit::App(i as u32), Some(Hit::App(ID_MORE | i as u32)), &list[i]);
+                more_button(cx, r, ID_MORE | i as u32);
+            } else {
+                cx.hit(r, Hit::App(i as u32), None, &list[i]);
+            }
         });
     }
 
@@ -200,6 +282,7 @@ impl App for Wiki {
                 self.pager.page = 0;
                 Cmd::Full
             }
+            Job::Article(_, Err(e)) if self.replace => Cmd::Batch(vec![Cmd::Pop, Cmd::Dialog(Dialog::message("Wikipedia", &e))]),
             Job::Results(Err(e)) | Job::Article(_, Err(e)) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Wikipedia", &e))]),
             Job::Article(title, Ok(html)) => {
                 let _ = std::fs::create_dir_all(cache_dir(sys));
@@ -236,6 +319,12 @@ impl App for Wiki {
                 self.pager.page = 0;
                 Cmd::Full
             }
+            m if m & ID_MORE != 0 => {
+                let i = (m & !ID_MORE) as usize;
+                let Some((_, title)) = self.saved_entry(i) else { return Cmd::None };
+                self.menu_for = Some(i);
+                Cmd::Dialog(Dialog::menu(T_SAVED_MENU, &title, vec!["Read".into(), "Delete".into()]))
+            }
             ID_LANG => Cmd::Dialog(Dialog::menu(T_LANG, "Wikipedia language", LANGS.iter().map(|l| l.to_string()).collect())),
             i => {
                 if self.query.is_some() {
@@ -244,22 +333,11 @@ impl App for Wiki {
                         None => Cmd::None,
                     }
                 } else {
-                    // saved entries are "<lang> - <title>"
-                    match self.saved.get(i as usize).cloned() {
-                        Some(n) => {
-                            let (lang, title) = n.split_once(" - ").map(|(l, t)| (l.to_string(), t.to_string()))
-                                .unwrap_or((self.lang.clone(), n));
-                            let path = cache_file(sys, &lang, &title);
-                            match std::fs::read_to_string(&path) {
-                                Ok(html) => {
-                                    let prev = std::mem::replace(&mut self.lang, lang);
-                                    let c = self.reader(&title, &html, sys);
-                                    self.lang = prev;
-                                    c
-                                }
-                                Err(e) => Cmd::Toast(e.to_string()),
-                            }
-                        }
+                    match self.saved_entry(i as usize) {
+                        Some((lang, title)) => match std::fs::read_to_string(cache_file(sys, &lang, &title)) {
+                            Ok(html) => Cmd::Push(Box::new(article_reader(&lang, &title, &html, sys))),
+                            Err(e) => Cmd::Toast(e.to_string()),
+                        },
                         None => Cmd::None,
                     }
                 }
@@ -279,6 +357,23 @@ impl App for Wiki {
                 self.spawn("Searching…", move || Job::Results(search(&lang, &q)));
                 Cmd::Redraw
             }
+            T_SAVED_MENU => match (choice, self.menu_for) {
+                (0, Some(i)) => self.action(i as u32, false, sys),
+                (1, Some(i)) => {
+                    let title = self.saved_entry(i).map(|e| e.1).unwrap_or_default();
+                    Cmd::Dialog(Dialog::confirm(T_DELETE, "Delete saved article?",
+                        &format!("“{title}” will be removed from this Kindle. You can open it again from Wikipedia when online."), "Delete"))
+                }
+                _ => Cmd::None,
+            },
+            T_DELETE => {
+                if let Some((lang, title)) = self.menu_for.take().and_then(|i| self.saved_entry(i)) {
+                    let _ = std::fs::remove_file(cache_file(sys, &lang, &title));
+                    self.load_saved(sys);
+                    return Cmd::Batch(vec![Cmd::Full, Cmd::Toast(format!("Deleted “{title}”"))]);
+                }
+                Cmd::None
+            }
             T_LANG => {
                 if let Some(l) = LANGS.get(choice) {
                     self.lang = l.to_string();
@@ -292,5 +387,37 @@ impl App for Wiki {
 
     fn gesture(&mut self, g: &Gesture, _sys: &mut Sys) -> Cmd {
         if self.pager.swipe(g) { Cmd::Redraw } else { Cmd::None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wikipedia_links_become_articles() {
+        assert_eq!(article_link("https://en.wikipedia.org/wiki/Mount_Everest#Climbing"),
+                   Some(("en".into(), "Mount Everest".into())));
+        assert_eq!(article_link("https://hi.m.wikipedia.org/wiki/%E0%A4%AD%E0%A4%BE%E0%A4%B0%E0%A4%A4"),
+                   Some(("hi".into(), "भारत".into())));
+        assert_eq!(article_link("https://en.wikipedia.org/wiki/Star_Wars:_A_New_Hope"),
+                   Some(("en".into(), "Star Wars: A New Hope".into())));
+        assert_eq!(article_link("https://en.wikipedia.org/wiki/File:Everest.jpg"), None);
+        assert_eq!(article_link("https://en.wikipedia.org/w/index.php?title=X&action=edit&redlink=1"), None);
+        assert_eq!(article_link("https://commons.wikimedia.org/wiki/Main_Page"), None);
+        let joined = crate::web::url_join("https://en.wikipedia.org/wiki/Kindle", "/wiki/E-reader");
+        assert_eq!(article_link(&joined), Some(("en".into(), "E-reader".into())));
+    }
+
+    #[test]
+    fn sections_keep_links_and_drop_citations() {
+        let html = r##"<p>The <a href="/wiki/Amazon_(company)">Amazon</a> Kindle<sup id="cite_ref-1" class="reference"><a href="#cite_note-1">[1]</a></sup> is an e-reader<sup class="noprint Inline-Template Template-Fact">[<i>citation needed</i>]</sup>. x<sup>2</sup></p>
+            <h2>History</h2><p>See <a href="https://example.com/x">this</a>.</p><h2>References</h2><p>gone</p>"##;
+        let (chapters, links) = split_sections("Kindle", html);
+        assert_eq!(chapters.len(), 2);
+        let text: String = chapters[0].1.iter().flat_map(|b| b.runs.iter().map(|r| r.text.as_str())).collect();
+        assert!(!text.contains('[') && text.contains("e-reader. x2"), "{text}");
+        let amazon = chapters[0].1.iter().flat_map(|b| &b.runs).find(|r| r.text.contains("Amazon")).unwrap();
+        assert_eq!(links[amazon.link.unwrap() as usize], "/wiki/Amazon_(company)");
     }
 }

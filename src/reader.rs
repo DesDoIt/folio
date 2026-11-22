@@ -50,6 +50,9 @@ struct Word {
     w: i32,
     offset: usize,
     link: Option<u32>,
+    /// no space before it in the text ("paper" + "." when the link ends before the full stop):
+    /// drawn without a gap and kept on the same line as the word before
+    glue: bool,
 }
 
 pub struct Line {
@@ -148,8 +151,9 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect, lay: L
         let mut words: Vec<Word> = vec![];
         let mut off = b.start;
         if !st.prefix.is_empty() {
-            words.push(Word { text: st.prefix.trim_end().into(), face: st.face, w: fonts.width(st.prefix.trim_end(), st.face, st.size), offset: off, link: None });
+            words.push(Word { text: st.prefix.trim_end().into(), face: st.face, w: fonts.width(st.prefix.trim_end(), st.face, st.size), offset: off, link: None, glue: false });
         }
+        let mut after_space = true;
         for run in &b.runs {
             let face = if st.face == Face::Mono { Face::Mono } else if run.bold { Face::Bold }
                        else if run.italic { Face::Italic } else { st.face };
@@ -161,8 +165,12 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect, lay: L
                     continue;
                 }
                 let ww = fonts.width(w, face, st.size);
-                words.push(Word { text: w.to_string(), face, w: ww, offset: off, link: run.link });
+                let glue = i == 0 && !after_space && !words.is_empty();
+                words.push(Word { text: w.to_string(), face, w: ww, offset: off, link: run.link, glue });
                 off += w.chars().count();
+            }
+            if !run.text.is_empty() {
+                after_space = run.text.ends_with(' ');
             }
         }
         let space = fonts.width(" ", st.face, st.size).max(3);
@@ -178,11 +186,22 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect, lay: L
             let mut used = 0;
             while i < words.len() {
                 let w = &words[i];
-                let need = if line_words.is_empty() { w.w } else { used + space + w.w };
-                if need <= avail {
-                    used = need;
-                    line_words.push(std::mem::replace(&mut words[i], Word { text: String::new(), face: st.face, w: 0, offset: 0, link: None }));
-                    i += 1;
+                // the word plus any fragments glued to it move to the next line together
+                let mut k = i + 1;
+                let mut cluster = w.w;
+                while k < words.len() && words[k].glue {
+                    cluster += words[k].w;
+                    k += 1;
+                }
+                let gap = if line_words.is_empty() || w.glue { 0 } else { space };
+                if used + gap + cluster <= avail || line_words.is_empty() && w.w <= avail {
+                    let end = if used + gap + cluster <= avail { k } else { i + 1 };
+                    used += gap;
+                    for j in i..end {
+                        used += words[j].w;
+                        line_words.push(std::mem::replace(&mut words[j], Word { text: String::new(), face: st.face, w: 0, offset: 0, link: None, glue: false }));
+                    }
+                    i = end;
                 } else if line_words.is_empty() {
                     // a single word wider than the line: split it by characters
                     let chars: Vec<char> = w.text.chars().collect();
@@ -195,13 +214,13 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect, lay: L
                     let (face, offset, link) = (w.face, w.offset, w.link);
                     let hw = fonts.width(&head, face, st.size);
                     let tw = fonts.width(&tail, face, st.size);
-                    line_words.push(Word { text: head, face, w: hw, offset, link });
-                    words[i] = Word { text: tail, face, w: tw, offset: offset + cut, link };
+                    line_words.push(Word { text: head, face, w: hw, offset, link, glue: false });
+                    words[i] = Word { text: tail, face, w: tw, offset: offset + cut, link, glue: false };
                     break;
                 } else {
                     // hyphenate the word that doesn't fit, if part of it does
                     if lay.hyphenate && st.justify {
-                        let room = avail - used - space;
+                        let room = avail - used - if w.glue { 0 } else { space };
                         let core: &str = w.text.trim_end_matches(|c: char| !c.is_alphanumeric());
                         let chars: Vec<char> = core.chars().collect();
                         for &p in crate::hyph::breaks(core).iter().rev() {
@@ -211,8 +230,9 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect, lay: L
                                 let tail: String = w.text.chars().skip(p).collect();
                                 let (face, offset, link) = (w.face, w.offset, w.link);
                                 let tw = fonts.width(&tail, face, st.size);
-                                line_words.push(Word { text: head, face, w: hw, offset, link });
-                                words[i] = Word { text: tail, face, w: tw, offset: offset + p, link };
+                                let glue = w.glue;
+                                line_words.push(Word { text: head, face, w: hw, offset, link, glue });
+                                words[i] = Word { text: tail, face, w: tw, offset: offset + p, link, glue: false };
                                 break;
                             }
                         }
@@ -267,20 +287,24 @@ pub fn draw_page(cx: &mut Ctx, page: &Page) -> PageGeom {
             continue;
         }
         let space = cx.f.width(" ", Face::Sans, line.size).max(3);
-        let total: i32 = line.words.iter().map(|w| w.w).sum::<i32>() + space * (n - 1);
+        let gaps = line.words.iter().skip(1).filter(|w| !w.glue).count() as i32;
+        let total: i32 = line.words.iter().map(|w| w.w).sum::<i32>() + space * gaps;
         let mut gap = space as f32;
         let mut x = line.x0 as f32;
         if line.center {
             x = (line.x0 + (line.avail - total) / 2) as f32;
-        } else if line.justify && n > 1 {
-            let g = (line.avail - (total - space * (n - 1))) as f32 / (n - 1) as f32;
+        } else if line.justify && gaps > 0 {
+            let g = (line.avail - (total - space * gaps)) as f32 / gaps as f32;
             // justify unless the gaps would be absurd (very few words on a wide line)
             if g <= space as f32 * 4.0 || line.size >= 24 && g <= space as f32 * 6.0 {
                 gap = g;
             }
         }
         let lh = line.lh;
-        for w in &line.words {
+        for (j, w) in line.words.iter().enumerate() {
+            if j > 0 && !w.glue {
+                x += gap;
+            }
             let wx = x.round() as i32;
             cx.c.text(cx.f, wx, line.y, &w.text, w.face, line.size, BLACK, Anchor::LT);
             words.push((Rect::new(wx - 2, line.y - 4, wx + w.w + 2, line.y + lh - 2), w.offset, w.text.clone()));
@@ -294,7 +318,7 @@ pub fn draw_page(cx: &mut Ctx, page: &Page) -> PageGeom {
                     _ => links.push((r, l)),
                 }
             }
-            x += w.w as f32 + gap;
+            x += w.w as f32;
         }
     }
     PageGeom { links, words }
@@ -350,6 +374,8 @@ pub struct Reader {
     synced_once: bool,
     /// HTML to keep if the user picks "Save for later" (articles, web pages)
     save_html: Option<String>,
+    /// where a web article came from (relative links resolve against it)
+    base_url: Option<String>,
     words: Vec<(Rect, usize, String)>,
     sel_word: Option<(usize, String)>,
     define_job: Option<Arc<Mutex<Option<Result<String, String>>>>>,
@@ -403,7 +429,7 @@ impl Reader {
         let chapter = chapter.min(book.spine.len().saturating_sub(1));
         Reader { path: key.into(), book, chapter, pages: vec![], page: 0, fs, layout: Layout::from_config(sys), laid_out: None,
                  want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), sync_pull: None, sync_offer: None, synced_once: false, links: vec![],
-                 link_boxes: vec![], note_target: None, save_html: None,
+                 link_boxes: vec![], note_target: None, save_html: None, base_url: None,
                  words: vec![], sel_word: None, define_job: None, last_turn: std::time::Instant::now(),
                  menu: vec![], toolbar: false }
     }
@@ -510,14 +536,48 @@ impl Reader {
         out
     }
 
-    /// Tap on a link: short targets (footnotes) pop up; others (table of contents) jump.
-    fn follow_link(&mut self, idx: usize) -> Cmd {
+    /// The web address an article came from: its links then open in Wikipedia or the Web app.
+    pub fn set_base_url(&mut self, url: &str) {
+        self.base_url = Some(url.to_string());
+    }
+
+    /// A link out of the book: Wikipedia articles open in Wikipedia, anything else in the Web app.
+    fn follow_web_link(&self, href: &str, sys: &Sys) -> Cmd {
+        let url = match &self.base_url {
+            Some(base) => crate::web::url_join(base, href),
+            None if href.contains("://") => href.to_string(),
+            None => return Cmd::Toast("This link points outside the book".into()),
+        };
+        if url.starts_with("mailto:") {
+            return Cmd::Toast(format!("Email: {}", url.trim_start_matches("mailto:")));
+        }
+        if !url.starts_with("http") {
+            return Cmd::Toast("This link can't be opened".into());
+        }
+        if let Some((lang, title)) = crate::wiki::article_link(&url) {
+            return crate::wiki::open_article(&lang, &title, sys);
+        }
+        if url.contains("wikipedia.org/") && url.contains("redlink=1") {
+            return Cmd::Toast("Wikipedia has no article on this yet".into());
+        }
+        Cmd::Push(Box::new(crate::web::Web::open(url, sys)))
+    }
+
+    /// Tap on a link: short targets (footnotes) pop up; others (table of contents) jump; web links
+    /// leave the book.
+    fn follow_link(&mut self, idx: usize, sys: &Sys) -> Cmd {
         let Some(href) = self.links.get(idx).cloned() else { return Cmd::None };
-        let Some((ch, frag)) = self.book.resolve_link(self.chapter, &href) else {
-            return Cmd::Toast("Web links open in the Web app".into());
+        let inside = if self.base_url.is_some() && !href.starts_with('#') { None } else { self.book.resolve_link(self.chapter, &href) };
+        let Some((ch, frag)) = inside else {
+            return self.follow_web_link(&href, sys);
         };
         let doc = self.book.chapter_doc(ch);
-        let off = frag.as_ref().and_then(|f| doc.anchors.get(f).copied()).unwrap_or(0);
+        let off = match frag.as_ref().map(|f| doc.anchors.get(f).copied()) {
+            Some(Some(o)) => o,
+            // a note or section this copy doesn't have: don't jump to the chapter start
+            Some(None) if ch == self.chapter => return Cmd::Toast("That part isn't in this copy".into()),
+            _ => 0,
+        };
         let block = doc.blocks.iter().filter(|b| b.kind != BlockKind::Image).find(|b| b.start + b.chars() > off);
         let text: String = block.map(|b| b.runs.iter().map(|r| r.text.as_str()).collect()).unwrap_or_default();
         if frag.is_some() && !text.is_empty() && text.chars().count() < 700 {
@@ -794,7 +854,7 @@ impl App for Reader {
 
     fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
         match id {
-            l if l & ID_LINK != 0 => self.follow_link((l & !ID_LINK) as usize),
+            l if l & ID_LINK != 0 => self.follow_link((l & !ID_LINK) as usize, sys),
             ID_NEXT => self.next(sys),
             ID_PREV => self.prev(sys),
             ID_BAR => {

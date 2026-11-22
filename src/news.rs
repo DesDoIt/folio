@@ -602,14 +602,17 @@ pub fn article_reader(it: &Item, page: Option<String>, sys: &Sys) -> Result<Read
         None => (it.content.clone(), false,
                  format!("<html><head><title>{}</title></head><body>{}</body></html>", it.title, it.content)),
     };
-    let (mut blocks, _) = html_to_doc(&html, reading);
+    let (mut blocks, links) = html_to_doc(&html, reading);
     if blocks.is_empty() {
         return Err("This article has no readable text.".into());
     }
     blocks.insert(0, crate::epub::Block { kind: crate::epub::BlockKind::Heading(1),
         runs: vec![crate::epub::Run { text: it.title.clone(), bold: true, italic: false, link: None }], start: 0 });
-    let book = Book::from_blocks(&it.title, "", vec![(it.title.clone(), blocks)]);
+    let book = Book::from_blocks(&it.title, "", vec![(it.title.clone(), blocks)]).with_links(links);
     let mut r = Reader::with_book(book, &format!("news:{}", it.link), sys);
+    if it.link.starts_with("http") {
+        r.set_base_url(&it.link);
+    }
     r.set_save_html(source_html);
     Ok(r)
 }

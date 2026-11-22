@@ -898,6 +898,8 @@ pub struct Book {
     zip: Option<Zip>,
     text: Option<String>,
     mem: Option<Vec<Vec<Block>>>,
+    /// link targets of an in-memory book (web article): `Run::link` indexes into this
+    links: Vec<String>,
     /// zip path of the cover image, if the EPUB declares one
     cover: Option<String>,
 }
@@ -963,7 +965,13 @@ impl Book {
         let toc = chapters.iter().enumerate().map(|(i, (t, _))| Chapter { title: t.clone(), spine: i }).collect();
         let spine = (0..chapters.len()).map(|i| format!("mem{i}")).collect();
         let mem = Some(chapters.into_iter().map(|(_, b)| b).collect());
-        Book { title: title.into(), author: author.into(), spine, toc, zip: None, text: None, mem, cover: None }
+        Book { title: title.into(), author: author.into(), spine, toc, zip: None, text: None, mem, cover: None, links: vec![] }
+    }
+
+    /// Attach the link targets the blocks' runs point into (from `html_to_doc`).
+    pub fn with_links(mut self, links: Vec<String>) -> Book {
+        self.links = links;
+        self
     }
 
     pub fn open(path: &str) -> Result<Book, String> {
@@ -1000,7 +1008,7 @@ impl Book {
                 .unwrap_or_else(|_| bytes.iter().map(|&b| b as char).collect()); // latin-1 fallback
             let title = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             return Ok(Book { title, author: String::new(), spine: vec!["text".into()],
-                             toc: vec![Chapter { title: "Text".into(), spine: 0 }], zip: None, text: Some(text), mem: None, cover: None });
+                             toc: vec![Chapter { title: "Text".into(), spine: 0 }], zip: None, text: Some(text), mem: None, cover: None, links: vec![] });
         }
         let mut zip = Zip::open(path)?;
         let container = zip.read_string("META-INF/container.xml").ok_or("missing META-INF/container.xml")?;
@@ -1113,7 +1121,7 @@ impl Book {
         if toc.is_empty() {
             toc = (0..spine.len()).map(|i| Chapter { title: format!("Section {}", i + 1), spine: i }).collect();
         }
-        Ok(Book { title, author, spine, toc, zip: Some(zip), text: None, mem: None, cover })
+        Ok(Book { title, author, spine, toc, zip: Some(zip), text: None, mem: None, cover, links: vec![] })
     }
 
     pub fn chapter_blocks(&mut self, i: usize) -> Vec<Block> {
@@ -1160,7 +1168,7 @@ impl Book {
                 }
                 d
             }
-            None => Doc { blocks: self.chapter_blocks(i), links: vec![], anchors: HashMap::new() },
+            None => Doc { blocks: self.chapter_blocks(i), links: self.links.clone(), anchors: HashMap::new() },
         }
     }
 

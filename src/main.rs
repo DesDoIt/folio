@@ -1047,6 +1047,18 @@ fn sim_main(out: &str) -> i32 {
         s.wait_idle(60);
         s.dismiss();
         s.shot("news-article");
+        // a link in the story opens in the Web app (relative to the story's address)
+        let depth = s.m.ui.stack.len();
+        if s.tap_nth("book-link", 0) {
+            println!("news: link opened {:?} (stack depth {} -> {})", s.m.ui.top().title(), depth, s.m.ui.stack.len());
+            s.shot("news-link-followed");
+            while s.m.ui.stack.len() > depth {
+                s.m.ui.pop(&mut s.m.sys);
+            }
+            s.render();
+        } else {
+            println!("news: no link found in the story");
+        }
         if s.m.ui.find_label("toolbar").is_some() {
             s.close_reader();
         }
@@ -1069,7 +1081,34 @@ fn sim_main(out: &str) -> i32 {
         s.tap("Chapters");
         s.shot("wiki-sections");
         s.tap("‹");
-        s.close_reader();
+        // follow a link in the article: another article opens (Wikipedia links) or the Web app
+        let n = s.m.ui.hits.iter().filter(|h| h.label == "book-link").count();
+        println!("wiki: {n} links on the page");
+        if s.tap_nth("book-link", 0) {
+            s.wait_idle(60);
+            s.dismiss();
+            println!("wiki: link opened {:?} (stack depth {})", s.m.ui.top().title(), s.m.ui.stack.len());
+            s.shot("wiki-link-followed");
+            while s.m.ui.stack.len() > 2 {
+                s.m.ui.pop(&mut s.m.sys);
+            }
+            s.render();
+        } else {
+            s.close_reader();
+        }
+        // saved articles can be deleted from their ⋯ menu
+        s.tap("Saved");
+        let before = s.m.ui.hits.iter().filter(|h| h.label == "⋯").count();
+        if s.tap_nth("⋯", 0) {
+            s.shot("wiki-saved-menu");
+            s.tap("Delete");
+            s.shot("wiki-saved-delete-confirm");
+            s.tap("Delete");
+            s.render();
+            let after = s.m.ui.hits.iter().filter(|h| h.label == "⋯").count();
+            println!("wiki: saved articles {before} -> {after}");
+            s.shot("wiki-saved-deleted");
+        }
     }
     s.tap("⌂");
     // Games

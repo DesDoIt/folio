@@ -60,7 +60,7 @@ pub fn url_join(base: &str, href: &str) -> String {
     format!("{origin}/{}{trailing}", parts.join("/"))
 }
 
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -298,6 +298,13 @@ impl Web {
                           link_boxes: vec![], saved_book: None, last_query: None, redirects: 0, pending: None };
         let html = start_page(sys);
         w.show(START.into(), html);
+        w
+    }
+
+    /// Open straight at an address (a link tapped in a book or article).
+    pub fn open(url: String, sys: &Sys) -> Web {
+        let mut w = Web::new(sys);
+        w.go(url, sys, false);
         w
     }
 
