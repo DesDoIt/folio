@@ -54,6 +54,8 @@ pub enum Hit {
     Swallow,
     /// The header's status area.
     Status,
+    /// The header's Wi-Fi button.
+    WifiStatus,
 }
 
 pub struct HitBox {
@@ -831,6 +833,11 @@ impl Ui {
             Hit::Back => self.go_back(sys),
             Hit::Home => self.home(sys),
             Hit::Swallow => {}
+            Hit::WifiStatus => {
+                if self.top().title() != "Wi-Fi" {
+                    self.push(Box::new(crate::settings::WifiApp::new()), sys);
+                }
+            }
             Hit::Status => {
                 if self.top().title() != "System" {
                     self.push(Box::new(crate::settings::SystemApp), sys);
@@ -907,9 +914,6 @@ fn draw_header(cx: &mut Ctx, title: &str, nav: bool, sys: &mut Sys) {
     }
     let st = sys.status();
     let mut right = Vec::new();
-    if st.wifi {
-        right.push("Wi-Fi".to_string());
-    }
     if st.ssh {
         right.push("SSH".to_string());
     }
@@ -918,11 +922,15 @@ fn draw_header(cx: &mut Ctx, title: &str, nav: bool, sys: &mut Sys) {
     }
     right.push(crate::sys::clock("%H:%M"));
     let rs = right.join("  ");
-    let rw = cx.text(w - 10, HEADER_H / 2, &rs, 18, BLACK, Anchor::RM);
-    if nav {
-        // the status (Wi-Fi, battery) opens System info
-        cx.hit(Rect::new(w - rw - 20, 0, w, HEADER_H), Hit::Status, None, "status");
-    }
+    let sw = cx.text(w - 10, HEADER_H / 2, &rs, 18, BLACK, Anchor::RM);
+    // battery and clock open System info
+    cx.hit(Rect::new(w - sw - 16, 0, w, HEADER_H), Hit::Status, None, "status");
+    // Wi-Fi: a button that shows the state and opens the Wi-Fi screen
+    let (label, on) = if st.wifi { ("Wi-Fi", true) } else if st.wifi_on { ("Wi-Fi…", false) } else { ("Wi-Fi off", false) };
+    let pw = cx.f.width(label, Face::Sans, cx.sz(17)) + 24;
+    let pr = Rect::new(w - sw - 22 - pw, 9, w - sw - 22, HEADER_H - 11);
+    cx.button(pr, label, Some(Hit::WifiStatus), Btn { size: 17, inverted: on, radius: 14, ..Default::default() });
+    let rw = sw + pw + 22;
     let t = cx.ellipsize(title, Face::Bold, 24, w - x - rw - 24);
     cx.bold(x, HEADER_H / 2, &t, 24, BLACK, Anchor::LM);
 }

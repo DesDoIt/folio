@@ -105,6 +105,10 @@ struct Main {
     cpu_fast: bool,
     /// Wi-Fi was switched off for being idle (or for sleep) and should come back on activity.
     wifi_auto_off: bool,
+    /// Wi-Fi watchdog: when we last saw it on without an address, and when we last nudged it.
+    wifi_no_ip_since: Option<Instant>,
+    wifi_last_fix: Instant,
+    wifi_last_check: Instant,
     last_battery_log: Instant,
 }
 
@@ -115,7 +119,9 @@ impl Main {
         *sys.dash.lock().unwrap() = dashboard::load_cache(&sys);
         let mut m = Main { ui: Ui::new(w, h), sys, sleeping: false, ignore_power_until: None, last_activity: Instant::now(),
                            last_dash_try: None, dash_busy: std::sync::Arc::new(std::sync::Mutex::new(false)),
-                           cpu_fast: true, wifi_auto_off: false, last_battery_log: Instant::now() };
+                           cpu_fast: true, wifi_auto_off: false, last_battery_log: Instant::now(),
+                           wifi_no_ip_since: None, wifi_last_fix: Instant::now(),
+                           wifi_last_check: Instant::now() };
         m.ui.push(Box::new(apps::Home::new()), &mut m.sys);
         if !sim && m.sys.config.get("setup_done") != "yes" {
             m.ui.push(Box::new(settings::SetupApp::new()), &mut m.sys);
@@ -132,13 +138,54 @@ impl Main {
         }
         if self.wifi_auto_off {
             self.wifi_auto_off = false;
-            let w = self.sys.wifi.clone();
+            self.wifi_start("back from idle");
+        }
+    }
+
+    fn wifi_start(&mut self, why: &str) {
+        log(&format!("wifi: on ({why})"));
+        let w = self.sys.wifi.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = w.start() {
+                sys::log(&format!("wifi restart failed: {e}"));
+            }
+        });
+        self.wifi_no_ip_since = Some(Instant::now());
+        self.wifi_last_fix = Instant::now();
+        self.sys.invalidate_status();
+    }
+
+    /// Every few seconds: if Wi-Fi is on but has no address, nudge it (reassociate + DHCP) every 30 s,
+    /// and restart it completely after 2 minutes without success.
+    fn wifi_watchdog(&mut self) {
+        if self.sys.sim || self.wifi_auto_off || !self.sys.wifi.running() {
+            self.wifi_no_ip_since = None;
+            return;
+        }
+        if sys::ip_address(false).is_some() {
+            if self.wifi_no_ip_since.take().is_some() {
+                log("wifi: connected");
+                self.sys.invalidate_status();
+            }
+            return;
+        }
+        let since = *self.wifi_no_ip_since.get_or_insert_with(Instant::now);
+        if self.wifi_last_fix.elapsed() < Duration::from_secs(30) {
+            return;
+        }
+        self.wifi_last_fix = Instant::now();
+        let w = self.sys.wifi.clone();
+        if since.elapsed() > Duration::from_secs(120) {
+            log("wifi: still no address after 2 min, restarting");
+            self.wifi_no_ip_since = Some(Instant::now());
             std::thread::spawn(move || {
+                w.stop();
                 if let Err(e) = w.start() {
                     sys::log(&format!("wifi restart failed: {e}"));
                 }
             });
-            self.sys.invalidate_status();
+        } else {
+            std::thread::spawn(move || w.reconnect());
         }
     }
 
@@ -149,7 +196,11 @@ impl Main {
             self.cpu_fast = false;
             battery::set_governor(self.sys.sim, "ondemand");
         }
-        let wifi_mins: u64 = self.sys.config.get("wifi_idle_off").parse().unwrap_or(15);
+        if self.wifi_last_check.elapsed() >= Duration::from_secs(5) {
+            self.wifi_last_check = Instant::now();
+            self.wifi_watchdog();
+        }
+        let wifi_mins: u64 = self.sys.config.get("wifi_idle_off").parse().unwrap_or(30);
         if wifi_mins > 0 && idle > Duration::from_secs(wifi_mins * 60) && self.sys.wifi.running() && !self.sys.sim
             && !self.sys.ssh.running() && !self.sys.keep_awake && !self.ui.top().busy() {
             log("wifi: off (idle)");

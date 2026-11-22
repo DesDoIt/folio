@@ -258,8 +258,28 @@ impl Wifi {
         run(&a, false).trim().to_string()
     }
 
+    /// Our wpa_supplicant is alive. (Its control socket can outlive it, so check the process too.)
     pub fn running(&self) -> bool {
-        self.sim || std::path::Path::new(&format!("{WPA_CTRL}/{IFACE}")).exists()
+        if self.sim {
+            return true;
+        }
+        if !std::path::Path::new(&format!("{WPA_CTRL}/{IFACE}")).exists() {
+            return false;
+        }
+        match std::fs::read_to_string("/run/wpa_supplicant.pid").ok().and_then(|p| p.trim().parse::<u32>().ok()) {
+            Some(pid) => std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            None => true,
+        }
+    }
+
+    /// Nudge a running supplicant to find the network again and renew the address.
+    pub fn reconnect(&self) {
+        if self.sim {
+            return;
+        }
+        log("wifi: reconnecting");
+        self.cli(&["reassociate"]);
+        self.start_dhcp();
     }
 
     fn iface_present() -> bool {
@@ -340,6 +360,21 @@ impl Wifi {
             let _ = c.kill();
             let _ = c.wait();
         }
+        // wait for wpa_supplicant to exit, so a later start() really starts it again
+        for _ in 0..20 {
+            if !self.running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if let Some(pid) = std::fs::read_to_string("/run/wpa_supplicant.pid").ok().and_then(|p| p.trim().parse::<i32>().ok()) {
+            if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+        let _ = std::fs::remove_file(format!("{WPA_CTRL}/{IFACE}"));
+        let _ = std::fs::remove_file("/run/wpa_supplicant.pid");
         run(&["ip", "addr", "flush", "dev", IFACE], false);
         run(&["ip", "link", "set", IFACE, "down"], false);
     }
@@ -521,7 +556,8 @@ impl Power {
 pub struct Status {
     pub battery: Option<u32>,
     pub charging: bool,
-    pub wifi: bool,
+    pub wifi: bool,    // connected (has an address)
+    pub wifi_on: bool, // switched on (maybe still connecting)
     pub ssh: bool,
 }
 
@@ -566,10 +602,11 @@ impl Sys {
     }
 
     pub fn status(&mut self) -> Status {
-        if self.status.0.map_or(true, |t| t.elapsed() > Duration::from_secs(20)) {
+        if self.status.0.map_or(true, |t| t.elapsed() > Duration::from_secs(8)) {
             let b = battery(self.sim);
-            let wifi = self.wifi.running() && ip_address(self.sim).is_some();
-            self.status = (Some(Instant::now()), Status { battery: b.capacity, charging: b.charging(), wifi,
+            let wifi_on = self.wifi.running();
+            let wifi = wifi_on && ip_address(self.sim).is_some();
+            self.status = (Some(Instant::now()), Status { battery: b.capacity, charging: b.charging(), wifi, wifi_on,
                                                            ssh: self.ssh.running() });
         }
         self.status.1.clone()

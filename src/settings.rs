@@ -320,7 +320,7 @@ const T_SYNC_PASS: u32 = 11;
 const T_SYNC_REGISTER: u32 = 12;
 const T_SYNC_SIGNOUT: u32 = 13;
 const T_WIFI_IDLE: u32 = 8;
-const WIFI_IDLE: [u32; 4] = [5, 15, 30, 0];
+const WIFI_IDLE: [u32; 4] = [15, 30, 60, 0];
 const T_WEATHER: u32 = 4;
 
 const T_PASSWORD: u32 = 1;
@@ -385,7 +385,7 @@ impl App for SettingsApp {
         item(cx, &mut y, S_REFRESH, "Full refresh every", &fr, Some("Lower = less ghosting, more flashing"));
         item(cx, &mut y, S_UISCALE, "Menu text size", if sys.config.get("ui_scale") == "large" { "large" } else { "normal" }, None);
         item(cx, &mut y, S_WIFI_AUTO, "Connect Wi-Fi at start", if sys.config.flag("wifi_autostart") { "yes" } else { "no" }, None);
-        let wi = sys.config.get("wifi_idle_off").parse::<u32>().unwrap_or(15);
+        let wi = sys.config.get("wifi_idle_off").parse::<u32>().unwrap_or(30);
         item(cx, &mut y, S_WIFI_IDLE, "Wi-Fi off when idle", &if wi == 0 { "never".to_string() } else { format!("after {wi} min") },
              Some("Saves battery; comes back when you tap"));
         } else {
