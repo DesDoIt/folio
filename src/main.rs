@@ -982,6 +982,12 @@ fn sim_main(out: &str) -> i32 {
     s.m.sys.config.set("feed_defaults", "2"); // keep the sample feed list as written
     s.tap("News");
     s.wait_idle(60);
+    s.settle(500);
+    s.shot("news-headlines");
+    s.tap("Other");
+    s.shot("news-headlines-topic");
+    s.tap("All");
+    s.tap("Feeds");
     s.shot("news-feeds");
     s.tap("Browse feeds");
     s.shot("news-browse");

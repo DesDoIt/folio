@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 rm -rf sim-out
 build/cargo.sh sim sim-out >/dev/null 2>&1 || true
 mkdir -p docs/screenshots
-for pair in home-weather:home books-covers:books books-list:books-list getbooks-progress:get-books-progress news-feeds:news-feeds news-browse:news-browse reader-page1:reader reader-toolbar:reader-toolbar reader-menu:reader-menu reader-chapters:chapters \
+for pair in home-weather:home books-covers:books books-list:books-list getbooks-progress:get-books-progress news-headlines-topic:news-headlines news-feeds:news-feeds news-browse:news-browse reader-page1:reader reader-toolbar:reader-toolbar reader-menu:reader-menu reader-chapters:chapters \
             getbooks-gutenberg:get-books getbooks-downloaded:get-books-downloaded web-start:web-start \
             web-wikipedia-0:web-results sleep-book-cover:sleep-book sleep-weather:sleep-weather sleep-highlight:sleep-highlight sleep-date:sleep-date terminal:terminal editor-typed:editor \
             wifi-password:wifi settings-dashboard:settings files-docs:files power:power boot-menu:boot-menu \

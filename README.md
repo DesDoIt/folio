@@ -19,7 +19,7 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 |:-:|:-:|:-:|
 | <img src="docs/screenshots/home.png" width="240" alt="Home screen"><br>Home | <img src="docs/screenshots/reader.png" width="240" alt="Built-in reader"><br>Reader | <img src="docs/screenshots/reader-toolbar.png" width="240" alt="Reader toolbar"><br>Reader toolbar |
 | <img src="docs/screenshots/get-books.png" width="240" alt="Get Books"><br>Get Books | <img src="docs/screenshots/books.png" width="240" alt="Library"><br>Library | <img src="docs/screenshots/books-list.png" width="240" alt="Library as a list"><br>Library (list) |
-| <img src="docs/screenshots/get-books-progress.png" width="240" alt="Download progress"><br>Downloading | <img src="docs/screenshots/news-feeds.png" width="240" alt="News front page"><br>News front page | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
+| <img src="docs/screenshots/get-books-progress.png" width="240" alt="Download progress"><br>Downloading | <img src="docs/screenshots/news-headlines.png" width="240" alt="News headlines"><br>News headlines | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
 | <img src="docs/screenshots/news.png" width="240" alt="News feed"><br>News | <img src="docs/screenshots/news-article.png" width="240" alt="News article"><br>Article | <img src="docs/screenshots/wikipedia.png" width="240" alt="Wikipedia article"><br>Wikipedia |
 | <img src="docs/screenshots/web-start.png" width="240" alt="Web browser"><br>Web | <img src="docs/screenshots/web-results.png" width="240" alt="Search results"><br>Search results | <img src="docs/screenshots/sleep-book.png" width="240" alt="Sleep screen: current book"><br>Sleep: current book |
 | <img src="docs/screenshots/sleep-weather.png" width="240" alt="Sleep screen: weather"><br>Sleep: weather | <img src="docs/screenshots/sleep-highlight.png" width="240" alt="Sleep screen: highlight"><br>Sleep: highlight | <img src="docs/screenshots/sleep-date.png" width="240" alt="Sleep screen: date"><br>Sleep: date |
@@ -48,7 +48,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 - **Reading stats**: minutes and pages per day, streaks, books finished, a 14-day chart
 
 **Internet**
-- **News**: RSS/Atom feeds as a magazine, with Indian news by default (The Hindu, Indian Express, Times of India,
+- **News**: **Headlines** merges all your feeds into one newest-first stream with topic chips (India, Business,
+  Law, Sport, Tech, World…) and story previews; RSS/Atom feeds as a magazine, with Indian news by default (The Hindu, Indian Express, Times of India,
   NDTV, Mint, LiveLaw, Bar & Bench, ESPNcricinfo) and **Browse feeds** to add more by topic; typing just a website
   (e.g. `scroll.in`) finds its feed; reading view finds the article on cluttered pages: a front page with each feed's name, description and latest headline,
   and story cards with summary, author, time, reading time and pictures; articles open in the reader, full text fetched when feeds only carry summaries,

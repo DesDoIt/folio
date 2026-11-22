@@ -449,6 +449,26 @@ pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
                 return (article_text_blocks(&body), vec![]);
             }
         }
+        // break up walls of text (plain paragraphs only, so links and formatting stay intact)
+        let mut out = Vec::with_capacity(blocks.len());
+        let mut off = 0;
+        for b in blocks {
+            let plain = b.kind == BlockKind::Para && b.runs.len() == 1 && b.runs[0].link.is_none();
+            let pieces = if plain { split_long_paragraph(b.runs[0].text.clone()) } else { vec![] };
+            if pieces.len() > 1 {
+                for p in pieces {
+                    let nb = Block { kind: BlockKind::Para, runs: vec![Run { text: p, ..b.runs[0].clone() }], start: off };
+                    off += nb.chars();
+                    out.push(nb);
+                }
+            } else {
+                let mut b = b;
+                b.start = off;
+                off += b.chars();
+                out.push(b);
+            }
+        }
+        return (out, links);
     }
     (blocks, links)
 }
@@ -496,7 +516,91 @@ pub fn jsonld_article_body(html: &str) -> Option<String> {
     } else {
         body
     };
-    Some(body.trim().to_string())
+    Some(strip_css(body.trim()))
+}
+
+/// Split a very long paragraph at sentence ends (". " + capital) into pieces of ~400–700 characters.
+fn split_long_paragraph(p: String) -> Vec<String> {
+    if p.chars().count() <= 900 {
+        return vec![p];
+    }
+    const ABBR: &[&str] = &["Mr", "Mrs", "Ms", "Dr", "No", "Nos", "vs", "v", "Ltd", "Co", "St", "Sr", "Jr", "Hon", "Rs", "Art", "Sec", "Ors", "Anr", "viz", "i.e", "e.g"];
+    let c: Vec<char> = p.chars().collect();
+    let mut out = vec![];
+    let mut start = 0;
+    let mut i = 0;
+    while i + 2 < c.len() {
+        let len = i.saturating_sub(start);
+        if len >= 400 && matches!(c[i], '.' | '?' | '!') && c[i + 1] == ' ' && (c[i + 2].is_uppercase() || c[i + 2] == '“' || c[i + 2] == '"') {
+            let word: String = c[start..i].iter().rev().take_while(|ch| !ch.is_whitespace()).collect::<Vec<_>>().into_iter().rev().collect();
+            let abbr = ABBR.iter().any(|a| word.eq_ignore_ascii_case(a)) || (word.len() == 1 && word.chars().all(char::is_uppercase));
+            if !abbr || len > 900 {
+                out.push(c[start..=i].iter().collect::<String>().trim().to_string());
+                start = i + 2;
+                i = start;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push(c[start..].iter().collect::<String>().trim().to_string());
+    out.retain(|s| !s.is_empty());
+    out
+}
+
+/// Remove CSS that leaked into text (".ad { display: none; } @media (max-width: 767px) { … }"),
+/// as some sites' JSON-LD article bodies contain. A rule is a selector starting with ".", "#" or "@"
+/// at a word start, then a balanced { … } block containing a "property: value".
+pub fn strip_css(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    let sel_char = |ch: char| ch.is_alphanumeric() || " _-.#:,()>+~*[]=\"'%".contains(ch);
+    while i < c.len() {
+        let starts_rule = matches!(c[i], '.' | '#' | '@')
+            && (i == 0 || c[i - 1].is_whitespace())
+            && c.get(i + 1).map_or(false, |n| n.is_alphabetic() || *n == '-' || *n == '_');
+        if starts_rule {
+            // selector up to "{", within a short distance and only selector-ish characters
+            let mut j = i + 1;
+            while j < c.len() && j - i < 160 && c[j] != '{' && sel_char(c[j]) {
+                j += 1;
+            }
+            if j < c.len() && c[j] == '{' {
+                let mut depth = 0;
+                let mut k = j;
+                while k < c.len() {
+                    match c[k] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                let body: String = c[j..k.min(c.len())].iter().collect();
+                if k < c.len() && body.contains(':') {
+                    i = k + 1;
+                    // a following rule often starts right away; collapse the gap
+                    while i < c.len() && c[i].is_whitespace() && out.ends_with(char::is_whitespace) {
+                        i += 1;
+                    }
+                    if !out.ends_with(char::is_whitespace) {
+                        out.push(' ');
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    out.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+        .replace(" \n", "\n").replace("\n ", "\n")
 }
 
 /// Plain text to paragraphs: on line breaks, or (when the text has none) where one sentence runs
@@ -524,6 +628,8 @@ fn article_text_blocks(text: &str) -> Vec<Block> {
             paras.push(cur.trim().to_string());
         }
     }
+    // walls of text: break paragraphs longer than ~900 characters every few sentences
+    let paras: Vec<String> = paras.into_iter().flat_map(split_long_paragraph).collect();
     let mut off = 0;
     paras.into_iter().map(|p| {
         let b = Block { kind: BlockKind::Para, runs: vec![Run { text: p, bold: false, italic: false, link: None }], start: off };
@@ -1152,5 +1258,16 @@ mod tests {
         let (blocks, _) = html_to_doc(html, true);
         assert_eq!(blocks.len(), 3, "{:?}", blocks.iter().map(|b| b.runs[0].text.clone()).collect::<Vec<_>>());
         assert!(blocks[1].runs[0].text.starts_with('“'));
+    }
+
+    #[test]
+    fn leaked_css_is_removed() {
+        let t = "He sought relief within two weeks. .desktop-ad { display: block; } .mobile-ad { display: none; } \
+                 @media (max-width: 767px) { .desktop-ad { display: none; } } The petitioner had approached the Court. \
+                 Section 3.2 of the Act, a #hashtag and an @mention { stay } untouched.";
+        let s = strip_css(t);
+        assert_eq!(s, "He sought relief within two weeks. The petitioner had approached the Court. \
+                       Section 3.2 of the Act, a #hashtag and an @mention { stay } untouched."
+                       .split_whitespace().collect::<Vec<_>>().join(" "));
     }
 }

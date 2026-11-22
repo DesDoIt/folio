@@ -170,7 +170,15 @@ impl SendApp {
         let _ = listener.set_nonblocking(true);
         if !sys.sim {
             // the Kindle firewall drops inbound connections; open our port while the screen is open
-            sys::run(&["iptables", "-I", "INPUT", "-p", "tcp", "--dport", &PORT.to_string(), "-j", "ACCEPT"], true);
+            let fw = sys::run(&["iptables", "-I", "INPUT", "-p", "tcp", "--dport", &PORT.to_string(), "-j", "ACCEPT"], true);
+            // Wi-Fi power saving can make the Kindle miss the phone's ARP requests ("address unreachable")
+            let ps = sys::run(&["iw", "dev", sys::IFACE, "set", "power_save", "off"], false);
+            let rules = sys::run(&["iptables", "-S", "INPUT"], true);
+            let addr = sys::run(&["ip", "-4", "-o", "addr", "show", sys::IFACE], false);
+            sys::log(&format!("send-to-kindle: listening on :{PORT}; iptables: {} | power_save off: {} | {} | INPUT rules: {}",
+                if fw.trim().is_empty() { "ok" } else { fw.trim() }, if ps.trim().is_empty() { "ok" } else { ps.trim() },
+                addr.split_whitespace().take(4).collect::<Vec<_>>().join(" "),
+                rules.lines().take(8).collect::<Vec<_>>().join(" ; ")));
         }
         let sh = Arc::new(Shared { log: Mutex::new(vec![]), stop: AtomicBool::new(false), docs });
         let s2 = sh.clone();
@@ -194,6 +202,7 @@ impl SendApp {
             sh.stop.store(true, Ordering::Relaxed);
             if !sys.sim {
                 sys::run(&["iptables", "-D", "INPUT", "-p", "tcp", "--dport", &PORT.to_string(), "-j", "ACCEPT"], true);
+                sys::run(&["iw", "dev", sys::IFACE, "set", "power_save", "on"], false);
             }
         }
     }
@@ -241,10 +250,14 @@ impl App for SendApp {
         cx.c.round_rect(r, 12, WHITE, 3, BLACK);
         cx.bold(r.cx(), r.cy(), &url, if ip.is_some() { 30 } else { 24 }, BLACK, Anchor::MM);
         y += 110;
-        for line in ["Pick EPUB, PDF or TXT files and tap Upload.", "They appear in Books right away.",
-                     "The page only works while this screen is open."] {
-            cx.text(a.x0 + 24, y, line, 18, BLACK, Anchor::LT);
-            y += 30;
+        for line in ["Pick EPUB, PDF or TXT files and tap Upload. They appear in Books right away, while this screen is open.",
+                     "“Address unreachable”? The phone must be on this same Wi-Fi: not on mobile data, and not a guest network (those keep devices apart)."] {
+            let sz = cx.sz(17);
+            for l in cx.f.wrap(line, Face::Sans, sz, a.w() - 48) {
+                cx.text(a.x0 + 24, y, &l, 17, BLACK, Anchor::LT);
+                y += sz as i32 + 7;
+            }
+            y += 8;
         }
         y += 20;
         cx.hline(a.x0 + 16, a.x1 - 16, y, 2, BLACK);

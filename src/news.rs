@@ -221,7 +221,7 @@ fn plain_text(html: &str) -> String {
         }
         out.push(' ');
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::epub::strip_css(&out.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn first_img(html: &str) -> Option<String> {
@@ -297,7 +297,8 @@ pub fn parse_feed(url: &str, xml: &str) -> Feed {
                     field = None;
                     match cur.as_mut() {
                         Some(it) => match n.as_str() {
-                            "title" => it.title = decode_entities(&v),
+                            // the first <title> is the story's; later ones are captions (<media:title>)
+                            "title" if it.title.is_empty() => it.title = decode_entities(&v),
                             "link" => it.link = v,
                             "pubdate" | "updated" | "published" | "date" if it.date.is_empty() => it.date = v,
                             "encoded" | "content" => it.content = decode_entities(&v),
@@ -635,6 +636,23 @@ pub struct News {
     thumbs_running: Arc<AtomicBool>,
     thumbs_shown: usize,
     last_thumb_redraw: std::time::Instant,
+    /// Headlines (all feeds merged) or the list of feeds; and the topic filter for Headlines.
+    headlines_view: bool,
+    topic: Option<&'static str>,
+    last_partial_redraw: std::time::Instant,
+}
+
+const ID_TAB_HEADLINES: u32 = 1_000_010;
+const ID_TAB_FEEDS: u32 = 1_000_011;
+const ID_TOPIC: u32 = 1_000_100; // + topic index
+
+/// Short names for the topic chips.
+fn topic_label(cat: &str) -> &str {
+    match cat {
+        "Law & Opinion" => "Law",
+        "Science & Tech" => "Tech",
+        c => c,
+    }
 }
 
 const ID_ADD: u32 = 1_000_001;
@@ -659,10 +677,12 @@ impl News {
             save_feed_urls(sys, &urls);
             sys.config.set("feed_defaults", DEFAULTS_VERSION);
         }
-        News { urls, feed: None, pager: Pager::new(FEED_ROW), job: None, busy_label: None, sel: 0,
+        let headlines_view = sys.config.get("news_view") != "feeds";
+        News { urls, feed: None, pager: Pager::new(if headlines_view { CARD_ROW } else { FEED_ROW }), job: None, busy_label: None, sel: 0,
                meta: load_meta(sys), loaded: HashMap::new(), refresh: None, refresh_left: 0, last_refresh: None,
                thumbs: Arc::new(Mutex::new(HashMap::new())), thumbs_running: Arc::new(AtomicBool::new(false)),
-               thumbs_shown: 0, last_thumb_redraw: std::time::Instant::now() }
+               thumbs_shown: 0, last_thumb_redraw: std::time::Instant::now(),
+               headlines_view, topic: None, last_partial_redraw: std::time::Instant::now() }
     }
 
     fn spawn(&mut self, label: &str, f: impl FnOnce() -> Job + Send + 'static) {
@@ -699,6 +719,86 @@ impl News {
         });
         self.refresh = Some(slot);
         self.last_refresh = Some(std::time::Instant::now());
+    }
+
+    /// Topic of a feed: its catalogue category, or "Other".
+    fn feed_topic(url: &str) -> &'static str {
+        CATALOG.iter().find(|c| c.3 == url).map_or("Other", |c| c.0)
+    }
+
+    /// Topics that the subscribed feeds cover, in catalogue order.
+    fn topics(&self) -> Vec<&'static str> {
+        let mut v: Vec<&'static str> = categories().into_iter()
+            .filter(|c| self.urls.iter().any(|u| Self::feed_topic(u) == *c)).collect();
+        if self.urls.iter().any(|u| Self::feed_topic(u) == "Other") {
+            v.push("Other");
+        }
+        v
+    }
+
+    /// All loaded feeds merged: newest first, duplicates (same headline) dropped, optional topic.
+    fn headlines(&self) -> Vec<(String, Item)> {
+        let mut all: Vec<(String, Item)> = vec![];
+        let mut seen = std::collections::HashSet::new();
+        for u in &self.urls {
+            if self.topic.map_or(false, |t| Self::feed_topic(u) != t) {
+                continue;
+            }
+            let Some(f) = self.loaded.get(u) else { continue };
+            let source = CATALOG.iter().find(|c| c.3 == u.as_str()).map(|c| c.1.to_string())
+                .unwrap_or_else(|| f.title.chars().take(30).collect());
+            for it in &f.items {
+                let key: String = it.title.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+                if seen.insert(key) {
+                    all.push((source.clone(), it.clone()));
+                }
+            }
+        }
+        all.sort_by_key(|(_, it)| std::cmp::Reverse(it.time().unwrap_or(0)));
+        all.truncate(120);
+        all
+    }
+
+    fn want_headline_thumbs(&mut self) {
+        let urls: Vec<String> = self.headlines().iter().map(|(_, i)| i.thumb.clone()).filter(|t| !t.is_empty()).take(40).collect();
+        if !urls.is_empty() && !self.thumbs_running.load(Ordering::SeqCst) {
+            fetch_thumbs(urls, self.thumbs.clone(), self.thumbs_running.clone());
+        }
+    }
+
+    fn render_headlines(&mut self, cx: &mut Ctx, a: Rect) {
+        // topic chips
+        let topics = self.topics();
+        let mut chips: Vec<(Option<&'static str>, &str)> = vec![(None, "All")];
+        chips.extend(topics.iter().map(|t| (Some(*t), topic_label(t))));
+        let y = a.y0 + 62;
+        let mut x = a.x0 + 12;
+        let size = cx.sz(15);
+        for (k, (t, label)) in chips.iter().enumerate() {
+            let w = cx.f.width(label, Face::Sans, size) + 22;
+            if x + w > a.x1 - 8 {
+                break;
+            }
+            let on = *t == self.topic;
+            cx.button(Rect::new(x, y, x + w, y + 40), label, Some(Hit::App(ID_TOPIC + k as u32)),
+                      Btn { size: 15, inverted: on, radius: 18, ..Default::default() });
+            x += w + 6;
+        }
+        let items = self.headlines();
+        let refreshing = self.refresh.is_some();
+        let empty = if refreshing { "Loading headlines…" } else if self.urls.is_empty() { "No feeds yet: tap Feeds → Browse feeds" }
+                    else { "No stories yet" };
+        if refreshing && !items.is_empty() {
+            cx.text(a.x1 - 14, a.y0 + 112, "updating…", 12, DARK, Anchor::RT);
+        }
+        let area = Rect::new(a.x0, a.y0 + 110, a.x1, a.y1);
+        let thumbs = self.thumbs.lock().unwrap();
+        self.pager.render(cx, area, items.len(), empty, |cx, r, i| {
+            let (src, it) = &items[i];
+            let img = thumbs.get(&it.thumb).and_then(|g| g.as_ref());
+            draw_story(cx, r, it, Some(src), img, i == 0);
+            cx.hit(r, Hit::App(i as u32), None, &it.title);
+        });
     }
 
     /// A site address turned out to have a feed elsewhere: remember the feed's address instead.
@@ -779,49 +879,58 @@ impl News {
         self.pager.render(cx, area, items.len(), "No articles", |cx, r, i| {
             let it = &items[i];
             let img = thumbs.get(&it.thumb).and_then(|g| g.as_ref());
-            let tw = if img.is_some() { THUMB_W + 14 } else { 0 };
-            let w = r.w() - 36 - tw;
-            let (hs, ss) = (if i == 0 { 22 } else { 20 }, 15u16);
-            let (hz, sz) = (cx.sz(hs), cx.sz(ss));
-            let mut y = r.y0 + 10;
-            let head = cx.f.wrap(&it.title, Face::Bold, hz, w);
-            let hl = head.len().min(2);
-            for (k, l) in head.iter().take(2).enumerate() {
-                let l = if k == 1 && head.len() > 2 { cx.ellipsize(&format!("{l}…"), Face::Bold, hs, w) } else { l.clone() };
-                cx.bold(r.x0 + 18, y, &l, hs, BLACK, Anchor::LT);
-                y += hz as i32 + 5;
-            }
-            let room = ((r.y1 - 30 - y) / (sz as i32 + 4)).clamp(0, 3) as usize;
-            let summary = if it.summary.starts_with(&it.title) { "" } else { it.summary.as_str() };
-            let lines = cx.f.wrap(summary, Face::Sans, sz, w);
-            for (k, l) in lines.iter().take(room).enumerate() {
-                let l = if k + 1 == room && lines.len() > room { cx.ellipsize(&format!("{l}…"), Face::Sans, ss, w) } else { l.clone() };
-                cx.text(r.x0 + 18, y + 2, &l, ss, DARK, Anchor::LT);
-                y += sz as i32 + 4;
-            }
-            let _ = hl;
-            let mut meta: Vec<String> = vec![];
-            if !it.author.is_empty() {
-                meta.push(it.author.clone());
-            }
-            if let Some(t) = it.time() {
-                meta.push(relative(t));
-            }
-            if let Some(m) = it.minutes() {
-                meta.push(format!("{m} min read"));
-            }
-            let m = cx.ellipsize(&meta.join("  ·  "), Face::Bold, 12, w);
-            cx.bold(r.x0 + 18, r.y1 - 24, &m, 12, DARK, Anchor::LT);
-            if let Some(g) = img {
-                let (tx, ty) = (r.x1 - 18 - THUMB_W, r.y0 + (r.h() - THUMB_H) / 2);
-                cx.c.blit(&g.px, g.w, g.h, tx, ty);
-                for edge in [Rect::new(tx - 1, ty - 1, tx + THUMB_W + 1, ty), Rect::new(tx - 1, ty + THUMB_H, tx + THUMB_W + 1, ty + THUMB_H + 1),
-                             Rect::new(tx - 1, ty, tx, ty + THUMB_H), Rect::new(tx + THUMB_W, ty, tx + THUMB_W + 1, ty + THUMB_H)] {
-                    cx.c.fill(edge, BLACK);
-                }
-            }
+            draw_story(cx, r, it, None, img, i == 0);
             cx.hit(r, Hit::App(i as u32), None, &it.title);
         });
+    }
+}
+
+/// One story card: headline (2 lines), summary, "SOURCE · author · time · reading time", picture.
+fn draw_story(cx: &mut Ctx, r: Rect, it: &Item, source: Option<&str>, img: Option<&crate::image::Gray>, lead: bool) {
+    let tw = if img.is_some() { THUMB_W + 14 } else { 0 };
+    let w = r.w() - 36 - tw;
+    let (hs, ss) = (if lead { 22 } else { 20 }, 15u16);
+    let (hz, sz) = (cx.sz(hs), cx.sz(ss));
+    let mut y = r.y0 + 10;
+    let head = cx.f.wrap(&it.title, Face::Bold, hz, w);
+    let hl = head.len().min(2);
+    for (k, l) in head.iter().take(2).enumerate() {
+        let l = if k == 1 && head.len() > 2 { cx.ellipsize(&format!("{l}…"), Face::Bold, hs, w) } else { l.clone() };
+        cx.bold(r.x0 + 18, y, &l, hs, BLACK, Anchor::LT);
+        y += hz as i32 + 5;
+    }
+    let room = ((r.y1 - 30 - y) / (sz as i32 + 4)).clamp(0, 3) as usize;
+    let summary = if it.summary.starts_with(&it.title) { "" } else { it.summary.as_str() };
+    let lines = cx.f.wrap(summary, Face::Sans, sz, w);
+    for (k, l) in lines.iter().take(room).enumerate() {
+        // always clip to the column: long words (URLs) don't wrap
+    let l = if k + 1 == room && lines.len() > room { cx.ellipsize(&format!("{l}…"), Face::Sans, ss, w) } else { cx.ellipsize(l, Face::Sans, ss, w) };
+        cx.text(r.x0 + 18, y + 2, &l, ss, DARK, Anchor::LT);
+        y += sz as i32 + 4;
+    }
+    let _ = hl;
+    let mut meta: Vec<String> = vec![];
+    if let Some(src) = source {
+        meta.push(src.to_uppercase());
+    }
+    if !it.author.is_empty() && source.is_none() {
+        meta.push(it.author.clone());
+    }
+    if let Some(t) = it.time() {
+        meta.push(relative(t));
+    }
+    if let Some(m) = it.minutes() {
+        meta.push(format!("{m} min read"));
+    }
+    let m = cx.ellipsize(&meta.join("  ·  "), Face::Bold, 12, w);
+    cx.bold(r.x0 + 18, r.y1 - 24, &m, 12, DARK, Anchor::LT);
+    if let Some(g) = img {
+        let (tx, ty) = (r.x1 - 18 - THUMB_W, r.y0 + (r.h() - THUMB_H) / 2);
+        cx.c.blit(&g.px, g.w, g.h, tx, ty);
+        for edge in [Rect::new(tx - 1, ty - 1, tx + THUMB_W + 1, ty), Rect::new(tx - 1, ty + THUMB_H, tx + THUMB_W + 1, ty + THUMB_H + 1),
+                     Rect::new(tx - 1, ty, tx, ty + THUMB_H), Rect::new(tx + THUMB_W, ty, tx + THUMB_W + 1, ty + THUMB_H)] {
+            cx.c.fill(edge, BLACK);
+        }
     }
 }
 
@@ -831,8 +940,9 @@ impl App for News {
     }
 
     fn back(&mut self, _sys: &mut Sys) -> Option<Cmd> {
+        let row = if self.headlines_view { CARD_ROW } else { FEED_ROW };
         self.feed.take().map(|_| {
-            self.pager = Pager::new(FEED_ROW);
+            self.pager = Pager::new(row);
             Cmd::Full
         })
     }
@@ -856,14 +966,25 @@ impl App for News {
             cx.button(Rect::new(a.x1 - 170, a.y0 + 8, a.x1 - 12, a.y0 + 56), "Refresh", Some(Hit::App(ID_REFRESH)), b);
             self.render_feed(cx, a);
         } else {
-            cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.cx() - 6, a.y0 + 58), "Browse feeds", Some(Hit::App(ID_BROWSE)),
-                      Btn { inverted: true, ..b });
-            cx.button(Rect::new(a.cx() + 6, a.y0 + 10, a.x1 - 12, a.y0 + 58), "+ Add site", Some(Hit::App(ID_ADD)), b);
-            let label = self.busy_label.clone().or_else(|| self.refresh.is_some().then(|| "Checking feeds…".to_string()));
-            if let Some(l) = label {
-                cx.text(a.cx(), a.y0 + 80, &l, 16, DARK, Anchor::MM);
+            let hv = self.headlines_view;
+            cx.button(Rect::new(a.x0 + 12, a.y0 + 8, a.cx() - 4, a.y0 + 54), "Headlines", Some(Hit::App(ID_TAB_HEADLINES)),
+                      Btn { inverted: hv, bold: hv, ..b });
+            cx.button(Rect::new(a.cx() + 4, a.y0 + 8, a.x1 - 12, a.y0 + 54), "Feeds", Some(Hit::App(ID_TAB_FEEDS)),
+                      Btn { inverted: !hv, bold: !hv, ..b });
+            if hv {
+                if let Some(l) = &self.busy_label {
+                    cx.text(a.cx(), a.y1 - 16, l, 15, DARK, Anchor::MM);
+                }
+                self.render_headlines(cx, a);
+            } else {
+                cx.button(Rect::new(a.x0 + 12, a.y0 + 62, a.cx() - 4, a.y0 + 106), "Browse feeds", Some(Hit::App(ID_BROWSE)), b);
+                cx.button(Rect::new(a.cx() + 4, a.y0 + 62, a.x1 - 12, a.y0 + 106), "+ Add site", Some(Hit::App(ID_ADD)), b);
+                let label = self.busy_label.clone().or_else(|| self.refresh.is_some().then(|| "Checking feeds…".to_string()));
+                if let Some(l) = label {
+                    cx.text(a.cx(), a.y0 + 124, &l, 15, DARK, Anchor::MM);
+                }
+                self.render_front(cx, Rect::new(a.x0, a.y0 + 136, a.x1, a.y1));
             }
-            self.render_front(cx, Rect::new(a.x0, a.y0 + 100, a.x1, a.y1));
         }
     }
 
@@ -891,10 +1012,17 @@ impl App for News {
                 self.refresh = None;
                 save_meta(sys, &self.meta);
                 redraw = self.feed.is_none();
+                if self.headlines_view && self.feed.is_none() {
+                    self.want_headline_thumbs();
+                }
+            } else if self.headlines_view && self.feed.is_none() && self.last_partial_redraw.elapsed().as_secs() >= 4 {
+                // show stories as feeds arrive, without flashing the screen for each one
+                self.last_partial_redraw = std::time::Instant::now();
+                redraw = true;
             }
         }
         // thumbnails: redraw when new ones arrived (at most every 2 s, and once when done)
-        if self.feed.is_some() {
+        if self.feed.is_some() || self.headlines_view {
             let n = self.thumbs.lock().unwrap().values().filter(|v| v.is_some()).count();
             let running = self.thumbs_running.load(Ordering::SeqCst);
             if n != self.thumbs_shown && (!running || self.last_thumb_redraw.elapsed().as_millis() >= 2000) {
@@ -932,11 +1060,27 @@ impl App for News {
             return Cmd::Toast("Still loading…".into());
         }
         match id {
+            ID_TAB_HEADLINES | ID_TAB_FEEDS => {
+                self.headlines_view = id == ID_TAB_HEADLINES;
+                sys.config.set("news_view", if self.headlines_view { "headlines" } else { "feeds" });
+                self.pager = Pager::new(if self.headlines_view { CARD_ROW } else { FEED_ROW });
+                if self.headlines_view {
+                    self.want_headline_thumbs();
+                }
+                Cmd::Full
+            }
+            t if (ID_TOPIC..ID_TOPIC + 20).contains(&t) && self.feed.is_none() && self.headlines_view => {
+                let k = (t - ID_TOPIC) as usize;
+                self.topic = if k == 0 { None } else { self.topics().get(k - 1).copied() };
+                self.pager = Pager::new(CARD_ROW);
+                self.want_headline_thumbs();
+                Cmd::Full
+            }
             ID_BROWSE => Cmd::Push(Box::new(FeedCatalog::new(sys))),
             ID_ADD => Cmd::Dialog(Dialog::input(T_ADD, "Add a site or feed", "", "Add").with_message("Just the website works, e.g. thehindu.com")),
             ID_BACK => {
                 self.feed = None;
-                self.pager = Pager::new(FEED_ROW);
+                self.pager = Pager::new(if self.headlines_view { CARD_ROW } else { FEED_ROW });
                 Cmd::Full
             }
             ID_REFRESH => {
@@ -954,6 +1098,15 @@ impl App for News {
             i => {
                 if let Some(f) = &self.feed {
                     if let Some(it) = f.items.get(i as usize).cloned() {
+                        self.spawn("Opening article…", move || {
+                            let page = fetch_article(&it);
+                            Job::Article(it, page)
+                        });
+                    }
+                    return Cmd::Redraw;
+                }
+                if self.headlines_view {
+                    if let Some((_, it)) = self.headlines().get(i as usize).cloned() {
                         self.spawn("Opening article…", move || {
                             let page = fetch_article(&it);
                             Job::Article(it, page)
@@ -1027,10 +1180,11 @@ mod tests {
         let xml = r#"<rss xmlns:dc="x" xmlns:media="y"><channel><title>Gazette</title><description>Daily &amp; local</description>
             <image><title>logo</title><url>http://e/l.png</url></image>
             <item><title>One</title><dc:creator>A. Writer</dc:creator><description>&lt;p&gt;Teaser &lt;b&gt;text&lt;/b&gt;&lt;/p&gt;</description>
-            <media:content url="http://e/1.jpg" medium="image"><media:credit>Photo</media:credit></media:content></item>
+            <media:content url="http://e/1.jpg" medium="image"><media:title>Caption</media:title><media:credit>Photo</media:credit></media:content></item>
             <item><title>Two</title><author>mail@e.org (B. Writer)</author><description>&lt;img src="http://e/2.png"&gt;Hi</description></item>
             </channel></rss>"#;
         let f = parse_feed("http://e/feed", xml);
+        assert_eq!(f.items[0].title, "One");
         assert_eq!(f.title, "Gazette");
         assert_eq!(f.description, "Daily & local");
         assert_eq!(f.items[0].author, "A. Writer");
