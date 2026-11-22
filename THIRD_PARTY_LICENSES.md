@@ -59,7 +59,7 @@ royalty provided the copyright notice and this notice are preserved (`data/hyph-
 
 `build/build.sh` downloads packages from the Alpine Linux v3.24 repositories (BusyBox, musl, curl,
 wpa_supplicant, iw, dropbear, nano, htop, MuPDF tools, DjVuLibre, libarchive tools and their dependencies)
-to assemble `out/kos-rootfs.ext3`. The page reader runs three of these as separate programs:
+to assemble `out/kos-rootfs.sqsh`. The page reader runs three of these as separate programs:
 **MuPDF** `mutool` (AGPL-3.0-or-later) for PDF, **DjVuLibre** `ddjvu`/`djvused` (GPL-2.0-or-later) for
 DjVu, and **libarchive** `bsdtar` (BSD-2-Clause) for CBR comics.
 The image is **not** part of this repository. Those packages keep their own licenses (GPL-2.0, MIT, BSD

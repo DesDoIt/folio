@@ -8,7 +8,9 @@
 #   * hold the power button ~15 s to force a reboot (stock Kindle comes back)
 
 KOS=/mnt/us/kos
-IMG=$KOS/kos-rootfs.ext3
+# compressed read-only image; an older ext3 image still works
+IMG=$KOS/kos-rootfs.sqsh
+[ -f "$IMG" ] || IMG=$KOS/kos-rootfs.ext3
 R=/var/tmp/kos-root
 LOG=$KOS/kos.log
 LOCK=/var/run/kos.lock
@@ -73,17 +75,19 @@ mount_all() {
         return 1
     fi
     echo "$LOOP" > "$LOOPFILE"
-    if command -v e2fsck >/dev/null 2>&1; then
-        e2fsck -p "$LOOP" >> "$LOG" 2>&1
-    fi
-    if ! mount -t ext3 -o noatime "$LOOP" "$R" 2>>"$LOG"; then
+    case "$IMG" in
+        *.sqsh) FSTYPE=squashfs; OPTS=ro ;;
+        *) FSTYPE=ext3; OPTS=noatime
+           command -v e2fsck >/dev/null 2>&1 && e2fsck -p "$LOOP" >> "$LOG" 2>&1 ;;
+    esac
+    if ! mount -t "$FSTYPE" -o "$OPTS" "$LOOP" "$R" 2>>"$LOG"; then
         log "mount image failed on $LOOP; kernel says: $(dmesg | tail -4 | tr '\n' ' ')"
         losetup -d "$LOOP" 2>/dev/null
         rm -f "$LOOPFILE"
         return 1
     fi
-    log "image mounted via $LOOP"
-    for d in proc sys dev dev/pts mnt/us kindle; do mkdir -p "$R/$d"; done
+    log "image ($FSTYPE) mounted via $LOOP"
+    for d in proc sys dev dev/pts mnt/us kindle; do mkdir -p "$R/$d" 2>/dev/null; done
     mount -t proc proc "$R/proc"
     mount -t sysfs sys "$R/sys"
     mount -o bind /dev "$R/dev"
@@ -92,9 +96,16 @@ mount_all() {
     # Kindle root, read-only, for lipc/iptables helpers (chroot /kindle ...)
     mount -o bind / "$R/kindle" && mount -o remount,ro,bind "$R/kindle" 2>/dev/null
     for d in var dev proc sys; do mount -o bind "/$d" "$R/kindle/$d" 2>/dev/null; done
-    mkdir -p "$R/run" "$R/tmp"
+    mkdir -p "$R/run" "$R/tmp" 2>/dev/null
     mount -t tmpfs -o size=16m tmpfs "$R/run"
     mount -t tmpfs -o size=32m tmpfs "$R/tmp"
+    if [ "$FSTYPE" = squashfs ]; then
+        # the image is read-only: give /etc a writable copy in RAM (DNS, password, time zone)
+        ETC=/tmp/kos-etc.$$
+        rm -rf "$ETC"; cp -a "$R/etc" "$ETC" && mount -t tmpfs -o size=8m,mode=0755 tmpfs "$R/etc" \
+            && cp -a "$ETC/." "$R/etc/" && log "etc: writable copy in RAM"
+        rm -rf "$ETC"
+    fi
     keep_state
     return 0
 }
@@ -104,13 +115,15 @@ mount_all() {
 # reinstalling or updating the image.
 PERSIST=/var/local/kindle-linux
 keep_state() {
-    mkdir -p "$PERSIST/dropbear" "$R/var/lib/kos" "$R/etc/dropbear" || return
+    mkdir -p "$PERSIST/dropbear" "$PERSIST/root" || return
+    mkdir -p "$R/var/lib/kos" "$R/etc/dropbear" "$R/root" 2>/dev/null
     if [ ! -f "$PERSIST/.created" ]; then
         cp -a "$R/var/lib/kos/." "$PERSIST/" 2>/dev/null   # first run: keep what this image already has
         touch "$PERSIST/.created"
     fi
     mount -o bind "$PERSIST" "$R/var/lib/kos" && log "state: $PERSIST"
     mount -o bind "$PERSIST/dropbear" "$R/etc/dropbear"
+    mount -o bind "$PERSIST/root" "$R/root"   # root's home: shell history, editor settings
     if [ -s "$PERSIST/root-shadow" ]; then
         line=$(head -1 "$PERSIST/root-shadow")
         case "$line" in root:*) sed -i "s|^root:.*|$line|" "$R/etc/shadow" ;; esac
@@ -165,7 +178,7 @@ kill_chroot_procs() {
 
 umount_all() {
     kill_chroot_procs
-    for d in etc/dropbear var/lib/kos kindle/sys kindle/proc kindle/dev kindle/var kindle tmp run mnt/us dev/pts dev sys proc; do
+    for d in root etc/dropbear etc var/lib/kos kindle/sys kindle/proc kindle/dev kindle/var kindle tmp run mnt/us dev/pts dev sys proc; do
         umount "$R/$d" 2>/dev/null || umount -l "$R/$d" 2>/dev/null
     done
     umount "$R" 2>/dev/null || umount -l "$R" 2>/dev/null
@@ -223,7 +236,18 @@ trap 'cleanup; exit 0' INT TERM HUP
 
 msg "Starting Kindle Linux..."
 if ! mount_all; then
-    umount_all; rmdir "$LOCK"; msg "Kindle Linux: could not mount image (see kos.log)"; exit 1
+    # a compressed image this kernel can't mount: fall back to an older ext3 image if one is there
+    if [ "$IMG" != "$KOS/kos-rootfs.ext3" ] && [ -f "$KOS/kos-rootfs.ext3" ]; then
+        umount_all
+        log "squashfs image didn't mount; using the old ext3 image"
+        IMG=$KOS/kos-rootfs.ext3
+        mount_all || { umount_all; rmdir "$LOCK"; msg "Kindle Linux: could not mount image (see kos.log)"; exit 1; }
+    else
+        umount_all; rmdir "$LOCK"; msg "Kindle Linux: could not mount image (see kos.log)"; exit 1
+    fi
+elif [ "$IMG" = "$KOS/kos-rootfs.sqsh" ] && [ -f "$KOS/kos-rootfs.ext3" ]; then
+    # the compressed image works: the old 256 MB ext3 image is no longer needed
+    rm -f "$KOS/kos-rootfs.ext3" && log "removed the old ext3 image (replaced by kos-rootfs.sqsh)"
 fi
 
 # Stop Amazon's UI and the services Kindle Linux replaces. powerd stays for safe suspend.

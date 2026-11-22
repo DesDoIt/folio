@@ -31,7 +31,7 @@ first time: most of it is the jailbreak, which you only do once.
 - **A USB cable that carries data**, not just power. If the Kindle doesn't show up as a drive on
   your computer, try another cable. This is the most common problem.
 - **A computer**: macOS, Linux, or Windows.
-- **About 300 MB free** on the Kindle (Kindle Linux itself is ~260 MB).
+- **About 100 MB free** on the Kindle (Kindle Linux itself is ~65 MB).
 - **Wi-Fi** for the jailbreak and for Kindle Linux's online features.
 - To build Kindle Linux yourself (step 5): **Docker Desktop** (or Podman) and **git**.
 
@@ -131,7 +131,7 @@ the work in a container; you don't need to install Rust or Linux tools.
 
    The first build takes about 5–15 minutes (it downloads the Rust compiler and Alpine Linux
    packages). Later builds take a minute or two. When it finishes you have two files in `out/`:
-   `kos` (the app) and `kos-rootfs.ext3` (the Linux system, 256 MB).
+   `kos` (the app) and `kos-rootfs.sqsh` (the compressed Linux system, about 60 MB).
 
    If it fails with a DNS or "unable to select packages" error, Docker couldn't reach the internet:
    restart Docker Desktop and run it again.
@@ -163,7 +163,7 @@ screenshots of every screen to `sim-out/`.
 
    | From the project | To the Kindle |
    |---|---|
-   | `out/kos-rootfs.ext3` | `kos/` |
+   | `out/kos-rootfs.sqsh` | `kos/` |
    | `out/kos` | `kos/` |
    | `host/kos-launch.sh`, `host/kos-boot.sh`, `host/kindle-linux.conf` | `kos/` |
    | `host/KindleLinux.sh`, `host/KindleLinux-BootOn.sh`, `host/KindleLinux-BootOff.sh` | `documents/` |
@@ -239,7 +239,7 @@ To remove the jailbreak itself, see the community's
 | The Kindle doesn't appear on the computer | Use a data cable (many cables are charge-only), try another USB port, and wake the Kindle. |
 | "Kindle Linux" isn't in the library | Check that `KindleLinux.sh` is in `documents/`, and that the jailbreak's hotfix is installed (step 4): it's what makes scripts show up in the library. |
 | Tapping it does nothing, or shows an error | Check `kos/kos.log` on the USB drive. Make sure all the files from step 6 are in `kos/`, and copy again if any are missing. |
-| "Couldn't mount image" | The copy of `kos-rootfs.ext3` is incomplete: copy it again and eject properly. |
+| "Couldn't mount image" | The copy of `kos-rootfs.sqsh` is incomplete: copy it again and eject properly. |
 | Wi-Fi doesn't connect | Tap the **Wi-Fi** button in the top bar, scan, and pick your network. Kindle Linux reconnects by itself after sleep; if it doesn't, the log shows why. |
 | The screen is stuck | Hold the power button for about 15 seconds to restart into the stock Kindle. |
 | Kindle Linux starts by itself and I want it to stop | Connect over USB and create an empty file called `disable` inside `kos/` (no extension). Delete it to allow starting again. |

@@ -26,7 +26,7 @@ if [ -f "$KOS/boot-pending" ]; then
     log "previous Kindle Linux boot did not finish: staying on stock Kindle this time"
     exit 0
 fi
-[ -x "$KOS/kos" ] && [ -f "$KOS/kos-rootfs.ext3" ] || { log "kos binary or image missing"; exit 0; }
+[ -x "$KOS/kos" ] && { [ -f "$KOS/kos-rootfs.sqsh" ] || [ -f "$KOS/kos-rootfs.ext3" ]; } || { log "kos binary or image missing"; exit 0; }
 
 # Give the stock UI a moment to settle, then take the screen for the boot menu.
 sleep 3

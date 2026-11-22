@@ -87,7 +87,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 ```
 Kindle kernel 3.0.35 (Amazon's, unchanged)
 └── host/kos-launch.sh        mounts the image, stops Amazon's UI, wifid, volumd
-    └── chroot: Alpine 3.24 armv7 (out/kos-rootfs.ext3, ~27 MB used)
+    └── chroot: Alpine 3.24 armv7 (out/kos-rootfs.sqsh: ~60 MB compressed, read-only; /etc in RAM,
+                settings/Wi-Fi/SSH state on the Kindle's /var/local)
         └── /opt/kos/kos      Rust GUI, static binary (~2.6 MB, fonts embedded)
 ```
 
@@ -120,7 +121,7 @@ and restarts the stock Kindle services.
 Needs Docker (or Podman) on an arm64 or x86_64 host.
 
 ```sh
-build/build.sh            # cross-compiles the GUI, builds out/kos-rootfs.ext3
+build/build.sh            # cross-compiles the GUI, builds out/kos-rootfs.sqsh
 build/cargo.sh sim        # runs the GUI simulator, writes PNG screenshots to sim-out/
 build/cargo.sh test       # unit tests
 build/install.sh          # copies everything to a Kindle mounted at /Volumes/Kindle
