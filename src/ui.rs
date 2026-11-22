@@ -80,6 +80,8 @@ pub struct Ctx<'a> {
     pub c: &'a mut Canvas,
     pub f: &'a mut Fonts,
     pub hits: Vec<HitBox>,
+    /// Interface text scale ("Larger menu text"); book pages draw their text directly and ignore it.
+    pub scale: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -113,16 +115,22 @@ impl<'a> Ctx<'a> {
         self.c.h
     }
 
+    pub fn sz(&self, size: u16) -> u16 {
+        (size as f32 * self.scale).round() as u16
+    }
     pub fn text(&mut self, x: i32, y: i32, s: &str, size: u16, color: u8, anchor: Anchor) -> i32 {
+        let size = self.sz(size);
         self.c.text(self.f, x, y, s, Face::Sans, size, color, anchor)
     }
     pub fn bold(&mut self, x: i32, y: i32, s: &str, size: u16, color: u8, anchor: Anchor) -> i32 {
+        let size = self.sz(size);
         self.c.text(self.f, x, y, s, Face::Bold, size, color, anchor)
     }
     pub fn mono(&mut self, x: i32, y: i32, s: &str, size: u16, color: u8) -> i32 {
         self.c.text(self.f, x, y, s, Face::Mono, size, color, Anchor::LT)
     }
     pub fn ellipsize(&mut self, s: &str, face: Face, size: u16, w: i32) -> String {
+        let size = self.sz(size);
         self.f.ellipsize(s, face, size, w)
     }
 
@@ -130,7 +138,8 @@ impl<'a> Ctx<'a> {
         self.hits.push(HitBox { r, tap, long, label: label.to_string() });
     }
 
-    pub fn button(&mut self, r: Rect, label: &str, hit: Option<Hit>, o: Btn) {
+    pub fn button(&mut self, r: Rect, label: &str, hit: Option<Hit>, mut o: Btn) {
+        o.size = self.sz(o.size).min((r.h() as u16).saturating_sub(10).max(12));
         let (bg, mut fg) = if o.inverted { (BLACK, WHITE) } else { (WHITE, BLACK) };
         let border_color = if o.disabled { MID } else { BLACK };
         if o.disabled {
@@ -626,7 +635,8 @@ impl Ui {
         let Some(mode) = self.need.take() else { return };
         let (w, h) = (self.cur.w, self.cur.h);
         self.cur.clear(WHITE);
-        let mut cx = Ctx { c: &mut self.cur, f: &mut self.fonts, hits: Vec::new() };
+        let scale = if sys.config.get("ui_scale") == "large" { 1.15 } else { 1.0 };
+        let mut cx = Ctx { c: &mut self.cur, f: &mut self.fonts, hits: Vec::new(), scale };
         // header
         let depth = self.stack.len();
         let app = self.stack.last_mut().unwrap();

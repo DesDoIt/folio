@@ -276,7 +276,7 @@ impl App for SystemApp {
 }
 
 // --- Settings ---------------------------------------------------------------------------
-const TIMEZONES: [&str; 8] = ["UTC", "Asia/Kolkata", "Europe/London", "Europe/Berlin", "America/New_York",
+pub const TIMEZONES: [&str; 8] = ["UTC", "Asia/Kolkata", "Europe/London", "Europe/Berlin", "America/New_York",
                               "America/Los_Angeles", "Asia/Tokyo", "Australia/Sydney"];
 const REFRESH: [u32; 5] = [4, 8, 12, 20, 40];
 
@@ -301,9 +301,13 @@ const T_AUTOSLEEP: u32 = 7;
 const AUTO_SLEEP: [u32; 6] = [2, 5, 10, 15, 30, 0];
 const S_DASH_NOW: u32 = 11;
 const S_PAGE: u32 = 12;
+const S_PREV: u32 = 18;
+const S_SETUP: u32 = 19;
+const PAGES: usize = 3;
 const S_SYSTEM: u32 = 13;
 const S_WIFI_IDLE: u32 = 15;
 const S_KOSYNC: u32 = 16;
+const S_UISCALE: u32 = 17;
 const T_SYNC_SERVER: u32 = 9;
 const T_SYNC_USER: u32 = 10;
 const T_SYNC_PASS: u32 = 11;
@@ -364,7 +368,7 @@ impl App for SettingsApp {
         item(cx, &mut y, S_SSH, "SSH server", if running { "ON" } else { "OFF" }, Some(&ssh_sub));
         item(cx, &mut y, S_PASSWORD, "Root password", if sys.ssh.has_password() { "set" } else { "not set" }, None);
         item(cx, &mut y, S_SSH_AUTO, "Start SSH automatically", if sys.config.flag("ssh_autostart") { "yes" } else { "no" }, None);
-        } else {
+        } else if self.page == 1 {
         section(cx, &mut y, "TIME");
         let tz = sys.config.get("timezone").to_string();
         item(cx, &mut y, S_TZ, "Time zone", &tz, None);
@@ -373,19 +377,28 @@ impl App for SettingsApp {
         section(cx, &mut y, "DISPLAY & POWER");
         let fr = format!("{} updates", sys.config.get("full_refresh_every"));
         item(cx, &mut y, S_REFRESH, "Full refresh every", &fr, Some("Lower = less ghosting, more flashing"));
+        item(cx, &mut y, S_UISCALE, "Menu text size", if sys.config.get("ui_scale") == "large" { "large" } else { "normal" }, None);
         item(cx, &mut y, S_WIFI_AUTO, "Connect Wi-Fi at start", if sys.config.flag("wifi_autostart") { "yes" } else { "no" }, None);
         let wi = sys.config.get("wifi_idle_off").parse::<u32>().unwrap_or(15);
         item(cx, &mut y, S_WIFI_IDLE, "Wi-Fi off when idle", &if wi == 0 { "never".to_string() } else { format!("after {wi} min") },
              Some("Saves battery; comes back when you tap"));
+        } else {
         section(cx, &mut y, "READING PROGRESS SYNC");
         let acct = sys.config.get("sync_user").to_string();
         item(cx, &mut y, S_KOSYNC, "KOReader sync account", if acct.is_empty() { "off" } else { &acct },
              Some("Continue books across devices"));
         section(cx, &mut y, "DEVICE");
         item(cx, &mut y, S_SYSTEM, "System info", "battery, memory…", None);
+        item(cx, &mut y, S_SETUP, "Run setup again", "", Some("The first-start guide"));
         }
-        let label = if self.page == 0 { "More settings ▶" } else { "◀ Back to first page" };
-        cx.button(Rect::new(a.x0 + 12, a.y1 - 66, a.x1 - 12, a.y1 - 12), label, Some(Hit::App(S_PAGE)), Btn::size(20));
+        let (by, mid) = (a.y1 - 66, a.cx());
+        if self.page > 0 {
+            cx.button(Rect::new(a.x0 + 12, by, mid - 70, a.y1 - 12), "◀ Back", Some(Hit::App(S_PREV)), Btn::size(20));
+        }
+        cx.text(mid, by + 27, &format!("{} / {}", self.page + 1, PAGES), 18, DARK, Anchor::MM);
+        if self.page + 1 < PAGES {
+            cx.button(Rect::new(mid + 70, by, a.x1 - 12, a.y1 - 12), "Next ▶", Some(Hit::App(S_PAGE)), Btn::size(20));
+        }
     }
 
     fn busy(&self) -> bool {
@@ -424,6 +437,11 @@ impl App for SettingsApp {
             }
             S_PASSWORD => Cmd::Dialog(Dialog::input(T_PASSWORD, "New root password", "", "Save").password()),
             S_SYSTEM => Cmd::Push(Box::new(SystemApp)),
+            S_UISCALE => {
+                let v = if sys.config.get("ui_scale") == "large" { "normal" } else { "large" };
+                sys.config.set("ui_scale", v);
+                Cmd::Full
+            }
             S_KOSYNC => {
                 if sys.config.get("sync_user").is_empty() {
                     self.draft.clear();
@@ -438,9 +456,14 @@ impl App for SettingsApp {
             S_WIFI_IDLE => Cmd::Dialog(Dialog::menu(T_WIFI_IDLE, "Wi-Fi off when idle",
                 WIFI_IDLE.iter().map(|m| if *m == 0 { "Never".to_string() } else { format!("After {m} minutes") }).collect())),
             S_PAGE => {
-                self.page = 1 - self.page;
+                self.page = (self.page + 1).min(PAGES - 1);
                 Cmd::Full
             }
+            S_PREV => {
+                self.page = self.page.saturating_sub(1);
+                Cmd::Full
+            }
+            S_SETUP => Cmd::Push(Box::new(SetupApp::new())),
             S_SSH_AUTO => flip(sys, "ssh_autostart"),
             S_WEATHER => Cmd::Dialog(Dialog::input(T_WEATHER, "Weather location", sys.config.get("weather_place"), "Find")
                 .with_message("City name, e.g. Pune or Berlin")),
@@ -639,5 +662,121 @@ impl App for PowerApp {
             }
             _ => Cmd::None,
         }
+    }
+}
+
+// --- First-start setup ---------------------------------------------------------------------------
+/// A short guided tour on first start (and from Settings): time zone, Wi-Fi, weather, sleep, tips.
+/// The choices reuse the Settings handlers, so both stay in sync.
+pub struct SetupApp {
+    step: usize,
+    inner: SettingsApp,
+}
+
+const SETUP_STEPS: usize = 5;
+const U_NEXT: u32 = 100;
+const U_BACK: u32 = 101;
+const U_SKIP: u32 = 102;
+const U_WIFI: u32 = 103;
+
+impl SetupApp {
+    pub fn new() -> SetupApp {
+        SetupApp { step: 0, inner: SettingsApp::new() }
+    }
+
+    fn finish(sys: &mut Sys) -> Cmd {
+        sys.config.set("setup_done", "yes");
+        Cmd::Batch(vec![Cmd::Pop, Cmd::Toast("All set. Settings has everything else.".into())])
+    }
+}
+
+impl App for SetupApp {
+    fn title(&self) -> String {
+        "Welcome".into()
+    }
+
+    fn render(&mut self, cx: &mut Ctx, a: Rect, sys: &mut Sys) {
+        let (x, w) = (a.x0 + 28, a.w() - 56);
+        let mut y = a.y0 + 30;
+        let para = |cx: &mut Ctx, y: &mut i32, s: &str| {
+            let sz = cx.sz(19);
+            for line in cx.f.wrap(s, Face::Sans, sz, w) {
+                cx.text(x, *y, &line, 19, DARK, Anchor::LT);
+                *y += (cx.sz(19) as i32) + 10;
+            }
+            *y += 12;
+        };
+        let choice = |cx: &mut Ctx, y: &mut i32, id: u32, label: &str, value: &str| {
+            let r = Rect::new(a.x0 + 12, *y, a.x1 - 12, *y + 64);
+            cx.c.round_rect(r, 10, WHITE, 2, BLACK);
+            cx.bold(r.x0 + 16, r.cy(), label, 21, BLACK, Anchor::LM);
+            cx.text(r.x1 - 16, r.cy(), value, 19, BLACK, Anchor::RM);
+            cx.hit(r, Hit::App(id), None, label);
+            *y += 78;
+        };
+        let heading = ["Welcome to Kindle Linux", "Time", "Wi-Fi", "Sleep screen", "A few tips"][self.step];
+        cx.bold(x, y, heading, 30, BLACK, Anchor::LT);
+        y += cx.sz(30) as i32 + 24;
+        match self.step {
+            0 => {
+                para(cx, &mut y, "A small Linux system for your Kindle: books, notes, a web browser, games and a terminal.");
+                para(cx, &mut y, "This short guide sets up the basics. Everything can be changed later in Settings.");
+                choice(cx, &mut y, S_UISCALE, "Menu text size", if sys.config.get("ui_scale") == "large" { "large" } else { "normal" });
+            }
+            1 => {
+                para(cx, &mut y, "Pick your time zone. The clock syncs from the internet once Wi-Fi is on.");
+                choice(cx, &mut y, S_TZ, "Time zone", &sys.config.get("timezone").to_string());
+            }
+            2 => {
+                para(cx, &mut y, "Wi-Fi is used for getting books, the browser, news, weather and time. You can skip this.");
+                let st = if sys.status().wifi { "connected" } else { "not connected" };
+                choice(cx, &mut y, U_WIFI, "Choose a network", st);
+                choice(cx, &mut y, S_WIFI_AUTO, "Connect at start", if sys.config.flag("wifi_autostart") { "yes" } else { "no" });
+            }
+            3 => {
+                para(cx, &mut y, "What the screen shows while the Kindle sleeps. The weather screen needs a location and Wi-Fi.");
+                choice(cx, &mut y, S_SLEEPSCREEN, "Sleep screen", crate::screensaver::mode_label(sys.config.get("sleep_screen")));
+                let place = sys.config.get("weather_place").to_string();
+                choice(cx, &mut y, S_WEATHER, "Weather location", if place.is_empty() { "not set" } else { &place });
+                let mins = sys.config.get("auto_sleep_minutes").parse::<u32>().unwrap_or(10);
+                choice(cx, &mut y, S_AUTOSLEEP, "Sleep after", &if mins == 0 { "never".to_string() } else { format!("{mins} min") });
+            }
+            _ => {
+                para(cx, &mut y, "• Tap the top bar's ⌂ to go home and ‹ to go back.");
+                para(cx, &mut y, "• In a book, tap the right side for the next page and the middle for the menu. Hold a word to look it up or highlight it.");
+                para(cx, &mut y, "• Copy books into the “books” folder over USB, or send them from a computer with Upload.");
+                para(cx, &mut y, "• Power off returns to the normal Kindle.");
+            }
+        }
+        let (by, mid) = (a.y1 - 70, a.cx());
+        if self.step == 0 {
+            cx.button(Rect::new(a.x0 + 12, by, mid - 8, a.y1 - 12), "Skip setup", Some(Hit::App(U_SKIP)), Btn::size(20));
+        } else {
+            cx.button(Rect::new(a.x0 + 12, by, mid - 8, a.y1 - 12), "◀ Back", Some(Hit::App(U_BACK)), Btn::size(20));
+        }
+        let next = if self.step + 1 == SETUP_STEPS { "Done" } else { "Next ▶" };
+        cx.button(Rect::new(mid + 8, by, a.x1 - 12, a.y1 - 12), next, Some(Hit::App(U_NEXT)),
+                  Btn { inverted: true, bold: true, ..Btn::size(20) });
+    }
+
+    fn action(&mut self, id: u32, long: bool, sys: &mut Sys) -> Cmd {
+        match id {
+            U_NEXT if self.step + 1 >= SETUP_STEPS => Self::finish(sys),
+            U_NEXT => {
+                self.step += 1;
+                Cmd::Full
+            }
+            U_BACK => {
+                self.step = self.step.saturating_sub(1);
+                Cmd::Full
+            }
+            U_SKIP => Self::finish(sys),
+            U_WIFI => Cmd::Push(Box::new(WifiApp::new())),
+            _ => self.inner.action(id, long, sys),
+        }
+    }
+
+    fn dialog(&mut self, tag: u32, choice: usize, text: String, sys: &mut Sys) -> Cmd {
+        self.inner.dialog(tag, choice, text, sys)
     }
 }

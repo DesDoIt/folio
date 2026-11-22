@@ -25,6 +25,7 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 | <img src="docs/screenshots/chess.png" width="240" alt="Chess"><br>Chess | <img src="docs/screenshots/sudoku.png" width="240" alt="Sudoku"><br>Sudoku | <img src="docs/screenshots/sketch.png" width="240" alt="Sketchpad"><br>Sketch |
 | <img src="docs/screenshots/highlights.png" width="240" alt="Highlights"><br>Highlights | <img src="docs/screenshots/stats.png" width="240" alt="Reading stats"><br>Reading stats | <img src="docs/screenshots/terminal.png" width="240" alt="Terminal"><br>Terminal |
 | <img src="docs/screenshots/files.png" width="240" alt="File manager"><br>Files | <img src="docs/screenshots/settings.png" width="240" alt="Settings"><br>Settings | <img src="docs/screenshots/boot-menu.png" width="240" alt="Boot menu"><br>Boot menu |
+| <img src="docs/screenshots/setup.png" width="240" alt="First-start setup"><br>First-start setup | <img src="docs/screenshots/setup-sleep.png" width="240" alt="Setup: sleep screen"><br>Setup: sleep screen | <img src="docs/screenshots/settings-large.png" width="240" alt="Settings with large menu text"><br>Large menu text |
 
 ## Features
 
@@ -63,7 +64,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 - **Terminal** with a built-in VT100 emulator and on-screen keyboard (Esc, Tab, Ctrl, arrows)
 - **Files**: browse, rename, delete, create files and folders
 - **Wi-Fi** via its own `wpa_supplicant`, **SSH**/SFTP via dropbear
-- **Settings**, **System** info, **Power** (sleep, exit to stock Kindle, reboot, power off)
+- **First-start setup**: a short guide for time zone, Wi-Fi, sleep screen and weather (run it again from Settings)
+- **Settings** (with an optional larger menu text size), **System** info, **Power** (sleep, exit to stock Kindle, reboot, power off)
 - **Boot menu**: optionally boot straight into Kindle Linux, with automatic fallback to the stock Kindle
 - Text in other scripts (Chinese, Japanese, Korean, Hebrew…) via fallback fonts; Devanagari and Arabic show
   their letters but not their joined forms (no shaping engine yet)

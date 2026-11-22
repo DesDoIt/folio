@@ -116,6 +116,9 @@ impl Main {
                            last_dash_try: None, dash_busy: std::sync::Arc::new(std::sync::Mutex::new(false)),
                            cpu_fast: true, wifi_auto_off: false, last_battery_log: Instant::now() };
         m.ui.push(Box::new(apps::Home::new()), &mut m.sys);
+        if !sim && m.sys.config.get("setup_done") != "yes" {
+            m.ui.push(Box::new(settings::SetupApp::new()), &mut m.sys);
+        }
         m
     }
 
@@ -602,14 +605,37 @@ fn sim_main(out: &str) -> i32 {
     s.tap("Cancel");
     s.tap("⌂");
     s.tap("Settings");
-    s.tap("More settings ▶");
+    s.tap("Next ▶");
+    s.tap("Next ▶");
+    s.shot("settings-page3");
     s.tap("System info");
     s.shot("system");
     s.tap("‹");
-    s.tap("◀ Back to first page");
+    s.tap("Run setup again");
+    s.shot("setup-welcome");
+    s.tap("Next ▶");
+    s.tap("Next ▶");
+    s.tap("Next ▶");
+    s.shot("setup-sleep");
+    s.tap("Next ▶");
+    s.shot("setup-tips");
+    s.tap("Done");
+    s.shot("setup-done");
+    s.settle(3100);
+    s.m.ui.expire_toast();
+    s.tap("◀ Back");
+    s.tap("◀ Back");
     s.shot("settings");
-    s.tap("More settings ▶");
+    s.tap("Next ▶");
     s.shot("settings-page2");
+    s.tap("Menu text size");
+    s.tap("◀ Back");
+    s.shot("settings-large");
+    s.tap("⌂");
+    s.shot("home-large");
+    s.tap("Settings");
+    s.tap("Next ▶");
+    s.tap("Menu text size");
     s.tap("Time zone");
     s.shot("settings-tz");
     s.tap("Asia/Kolkata");
