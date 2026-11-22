@@ -10,6 +10,7 @@ readme = "README.md"
 [dependencies]
 libc = "0.2"
 fontdue = "0.9"
+ab_glyph = "0.2"
 vte = "0.13"
 png = "0.17"
 miniz_oxide = "0.8"

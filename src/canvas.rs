@@ -79,7 +79,9 @@ pub struct Fonts {
     italic: fontdue::Font,
     cache: HashMap<(Face, char, u16), Glyph>,
     /// Extra scripts (CJK, Devanagari, Arabic, Hebrew, Thai...), loaded on first use from disk.
-    fallbacks: Option<Vec<fontdue::Font>>,
+    /// These use ab_glyph, which reads glyphs on demand: fontdue would turn every glyph of the
+    /// 50k-glyph CJK font into outlines up front (~120 MB of RAM), enough to freeze the Kindle.
+    fallbacks: Option<Vec<ab_glyph::FontVec>>,
 }
 
 /// Fallback fonts, in priority order (Alpine: font-droid-nonlatin; Debian: fonts-droid-fallback).
@@ -99,6 +101,29 @@ static SANS: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 static BOLD: &[u8] = include_bytes!("../fonts/DejaVuSans-Bold.ttf");
 static MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
 static ITALIC: &[u8] = include_bytes!("../fonts/DejaVuSans-Oblique.ttf");
+
+/// Draw one glyph from a fallback font, in the same layout fontdue uses: `size` is pixels per em,
+/// `ymin` is the bitmap's bottom edge above the baseline.
+fn rasterize_fallback(font: &ab_glyph::FontVec, c: char, size: f32) -> Glyph {
+    use ab_glyph::{Font, ScaleFont};
+    let upem = font.units_per_em().unwrap_or(1000.0);
+    let scale = ab_glyph::PxScale::from(size * font.height_unscaled() / upem);
+    let id = font.glyph_id(c);
+    let advance = font.as_scaled(scale).h_advance(id);
+    let Some(outline) = font.outline_glyph(id.with_scale(scale)) else {
+        return Glyph { w: 0, h: 0, xmin: 0, ymin: 0, advance, bitmap: Vec::new() };
+    };
+    let b = outline.px_bounds();
+    let (w, h) = (b.width() as usize, b.height() as usize);
+    let mut bitmap = vec![0u8; w * h];
+    outline.draw(|x, y, cov| {
+        let (x, y) = (x as usize, y as usize);
+        if x < w && y < h {
+            bitmap[y * w + x] = (cov.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    });
+    Glyph { w, h, xmin: b.min.x as i32, ymin: -(b.max.y as i32), advance, bitmap }
+}
 
 impl Fonts {
     pub fn load() -> Fonts {
@@ -124,10 +149,9 @@ impl Fonts {
 
     fn load_fallbacks(&mut self) {
         if self.fallbacks.is_none() {
-            let s = fontdue::FontSettings::default();
             self.fallbacks = Some(FALLBACK_FONTS.iter()
                 .filter_map(|p| std::fs::read(p).ok())
-                .filter_map(|b| fontdue::Font::from_bytes(b, s).ok())
+                .filter_map(|b| ab_glyph::FontVec::try_from_vec(b).ok())
                 .collect());
         }
     }
@@ -144,13 +168,16 @@ impl Fonts {
             if font.lookup_glyph_index(c) == 0 && f != Face::Sans {
                 font = &self.sans;
             }
-            if need_fallback {
-                if let Some(fb) = self.fallbacks.as_ref().and_then(|v| v.iter().find(|x| x.lookup_glyph_index(c) != 0)) {
-                    font = fb;
-                }
-            }
-            let (m, bitmap) = font.rasterize(c, size as f32);
-            let g = Glyph { w: m.width, h: m.height, xmin: m.xmin, ymin: m.ymin, advance: m.advance_width, bitmap };
+            let fallback = if need_fallback {
+                self.fallbacks.as_ref().and_then(|v| v.iter().find(|x| ab_glyph::Font::glyph_id(*x, c).0 != 0))
+                    .map(|fb| rasterize_fallback(fb, c, size as f32))
+            } else {
+                None
+            };
+            let g = fallback.unwrap_or_else(|| {
+                let (m, bitmap) = font.rasterize(c, size as f32);
+                Glyph { w: m.width, h: m.height, xmin: m.xmin, ymin: m.ymin, advance: m.advance_width, bitmap }
+            });
             if self.cache.len() > 4000 {
                 self.cache.clear();
             }
@@ -407,5 +434,33 @@ impl Canvas {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rss_kb() -> usize {
+        std::fs::read_to_string("/proc/self/status").ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok()))
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn fallback_scripts_render_without_eating_memory() {
+        let mut f = Fonts::load();
+        let before = rss_kb();
+        for c in ['中', 'あ', '한', 'ह', '🎉'] {
+            let g = f.glyph(Face::Sans, c, 32);
+            let present = FALLBACK_FONTS.iter().any(|p| std::path::Path::new(p).exists());
+            if c != '🎉' && present {
+                assert!(g.w > 4 && g.h > 4 && g.bitmap.iter().any(|&v| v > 128), "{c} drew nothing");
+                assert!(g.ymin > -16 && g.advance > 16.0, "{c}: ymin {} advance {}", g.ymin, g.advance);
+            }
+        }
+        let grown = rss_kb().saturating_sub(before);
+        assert!(grown < 20_000, "fallback fonts took {grown} kB");
     }
 }

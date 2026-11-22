@@ -211,7 +211,7 @@ impl App for Sudoku {
         cx.button(Rect::new(a.x0 + 30 + 2 * w3, by, a.x1 - 10, by + 56), "New game", Some(Hit::App(SU_NEW)), Btn::size(20));
         let secs = self.solved.unwrap_or_else(|| self.started.elapsed().as_secs());
         let left = self.cells.iter().filter(|&&v| v == 0).count();
-        let status = if self.solved.is_some() { format!("Solved in {}:{:02}! 🎉", secs / 60, secs % 60) }
+        let status = if self.solved.is_some() { format!("Solved in {}:{:02}!", secs / 60, secs % 60) }
                      else { format!("{left} cells left · {}:{:02}", secs / 60, secs % 60) };
         cx.text(a.cx(), by + 82, &status, 18, DARK, Anchor::MM);
     }
@@ -570,7 +570,7 @@ impl Chess {
         let check = self.pos.in_check(self.pos.white);
         self.status = match (moves.is_empty(), check, self.pos.white) {
             (true, true, true) => "Checkmate — the engine wins".into(),
-            (true, true, false) => "Checkmate — you win! 🎉".into(),
+            (true, true, false) => "Checkmate — you win!".into(),
             (true, false, _) => "Stalemate — draw".into(),
             (false, true, true) => "Check! Your move".into(),
             (false, _, true) => "Your move (white)".into(),
