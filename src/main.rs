@@ -5,6 +5,7 @@
 //!   11 open Amazon's browser (URL in /mnt/us/kos/request)   20 reboot   21 power off   1 crashed
 
 mod apps;
+mod battery;
 mod bootmenu;
 mod canvas;
 mod dashboard;
@@ -95,6 +96,11 @@ struct Main {
     last_activity: Instant,
     last_dash_try: Option<Instant>,
     dash_busy: std::sync::Arc<std::sync::Mutex<bool>>,
+    /// CPU at full speed (while interacting); drops to "ondemand" when idle.
+    cpu_fast: bool,
+    /// Wi-Fi was switched off for being idle (or for sleep) and should come back on activity.
+    wifi_auto_off: bool,
+    last_battery_log: Instant,
 }
 
 impl Main {
@@ -103,12 +109,54 @@ impl Main {
         sys::set_timezone(&sys.config.get("timezone").to_string(), sim);
         *sys.dash.lock().unwrap() = dashboard::load_cache(&sys);
         let mut m = Main { ui: Ui::new(w, h), sys, sleeping: false, ignore_power_until: None, last_activity: Instant::now(),
-                           last_dash_try: None, dash_busy: std::sync::Arc::new(std::sync::Mutex::new(false)) };
+                           last_dash_try: None, dash_busy: std::sync::Arc::new(std::sync::Mutex::new(false)),
+                           cpu_fast: true, wifi_auto_off: false, last_battery_log: Instant::now() };
         m.ui.push(Box::new(apps::Home::new()), &mut m.sys);
         m
     }
 
+    /// User did something: full CPU speed, and bring Wi-Fi back if we switched it off.
+    fn activity(&mut self) {
+        self.last_activity = Instant::now();
+        if !self.cpu_fast {
+            self.cpu_fast = true;
+            battery::set_governor(self.sys.sim, "performance");
+        }
+        if self.wifi_auto_off {
+            self.wifi_auto_off = false;
+            let w = self.sys.wifi.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = w.start() {
+                    sys::log(&format!("wifi restart failed: {e}"));
+                }
+            });
+            self.sys.invalidate_status();
+        }
+    }
+
+    /// Once a second: slow the CPU when idle, switch Wi-Fi off when idle for long, log the battery.
+    fn power_housekeeping(&mut self, touching: bool) {
+        let idle = self.last_activity.elapsed();
+        if self.cpu_fast && !touching && !self.ui.top().busy() && idle > Duration::from_secs(8) {
+            self.cpu_fast = false;
+            battery::set_governor(self.sys.sim, "ondemand");
+        }
+        let wifi_mins: u64 = self.sys.config.get("wifi_idle_off").parse().unwrap_or(15);
+        if wifi_mins > 0 && idle > Duration::from_secs(wifi_mins * 60) && self.sys.wifi.running() && !self.sys.sim
+            && !self.sys.ssh.running() && !self.sys.keep_awake && !self.ui.top().busy() {
+            log("wifi: off (idle)");
+            self.sys.wifi.stop();
+            self.wifi_auto_off = true;
+            self.sys.invalidate_status();
+        }
+        if self.last_battery_log.elapsed() > Duration::from_secs(600) {
+            self.last_battery_log = Instant::now();
+            battery::record(&self.sys, true);
+        }
+    }
+
     fn startup(&mut self) {
+        battery::record(&self.sys, true);
         if self.sys.config.flag("wifi_autostart") {
             let w = self.sys.wifi.clone();
             std::thread::spawn(move || {
@@ -142,10 +190,19 @@ impl Main {
         if self.sys.sim {
             return;
         }
+        battery::record(&self.sys, false);
+        // Wi-Fi off while asleep (it would keep draining the battery); it comes back on wake
+        if self.sys.wifi.running() && !self.sys.ssh.running() {
+            self.sys.wifi.stop();
+            self.wifi_auto_off = true;
+        }
         let t0 = Instant::now();
         let r = self.sys.power.suspend_now();
         log(&format!("woke after {} s ({})", t0.elapsed().as_secs(), match r { Ok(()) => "ok".into(), Err(e) => e }));
+        battery::record(&self.sys, true);
+        self.last_battery_log = Instant::now();
         self.leave_sleep();
+        self.activity();
     }
 
     fn leave_sleep(&mut self) {
@@ -255,7 +312,7 @@ impl Main {
                     let gestures = t.read();
                     let raw_events = t.raw.as_mut().map(std::mem::take).unwrap_or_default();
                     if !self.sleeping {
-                        self.last_activity = Instant::now();
+                        self.activity();
                         let raw_top = if raw_mode { self.ui.raw_top() } else { 0 };
                         for ev in raw_events {
                             let y = match ev { ui::RawTouch::Down(_, y) | ui::RawTouch::Move(_, y) | ui::RawTouch::Up(_, y) => y };
@@ -320,6 +377,7 @@ impl Main {
                     self.ui.request(Update::Quality); // header clock
                 }
                 let touching = touch.as_ref().map_or(false, |t| t.down);
+                self.power_housekeeping(touching);
                 if self.auto_sleep_due(touching) {
                     self.go_to_sleep(disp, "inactivity");
                 }
@@ -331,6 +389,7 @@ impl Main {
             self.sys.ssh.stop();
             self.sys.wifi.stop();
         }
+        battery::set_governor(self.sys.sim, "performance"); // KOReader and the launcher expect full speed
         if let Some(mut w) = watcher {
             let _ = w.child.kill();
             let _ = w.child.wait();
@@ -779,6 +838,27 @@ fn sim_main(out: &str) -> i32 {
     s.shot("send-to-kindle");
     println!("uploaded file exists: {}", std::path::Path::new(&format!("{}/documents/Uploaded Sample.epub", s.m.sys.us)).exists());
     s.tap("⌂");
+    // Battery history with three days of synthetic samples
+    {
+        let t1 = unsafe { libc::time(std::ptr::null_mut()) } as i64;
+        let mut log = String::new();
+        let (mut t, mut pct, mut awake) = (t1 - 3 * 86400, 96i64, false);
+        while t < t1 {
+            let st = if awake { "awake" } else { "asleep" };
+            log.push_str(&format!("{t}\t{pct}\td\t{st}\n"));
+            let span = if awake { 3600 * 2 } else { 3600 * 10 };
+            pct -= if awake { 8 } else { 1 };
+            if pct < 35 {
+                pct = 100; // charged
+            }
+            t += span;
+            awake = !awake;
+        }
+        let _ = std::fs::write(format!("{}/kos/battery.log", s.m.sys.us), log);
+        s.m.ui.push(Box::new(battery::BatteryApp), &mut s.m.sys);
+        s.shot("battery");
+        s.tap("⌂");
+    }
     // Weather dashboard: live forecast
     match dashboard::geocode("London") {
         Ok((lat, lon, label)) => {

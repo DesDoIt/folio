@@ -156,6 +156,7 @@ cpu_restore() {
 
 koreader_session() {
     file="$1"
+    [ -n "$OLD_GOVERNOR" ] && echo performance > "$CPUFREQ/scaling_governor" 2>/dev/null
     # KOReader talks to Amazon's wifi manager over lipc; with it stopped those calls stall the UI.
     # Hand Wi-Fi back to Amazon while KOReader runs.
     kill_chroot_named wpa_supplicant udhcpc

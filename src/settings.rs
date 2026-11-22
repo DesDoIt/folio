@@ -262,10 +262,15 @@ impl App for SystemApp {
             y += 42;
             cx.hline(a.x0 + 16, a.x1 - 16, y - 10, 1, LIGHT);
         }
-        cx.button(Rect::new(a.x0 + 16, a.y1 - 74, a.x1 - 16, a.y1 - 16), "Refresh", Some(Hit::App(1)), Btn::size(22));
+        let half = (a.w() - 44) / 2;
+        cx.button(Rect::new(a.x0 + 16, a.y1 - 74, a.x0 + 16 + half, a.y1 - 16), "Battery history", Some(Hit::App(2)), Btn::size(20));
+        cx.button(Rect::new(a.x1 - 16 - half, a.y1 - 74, a.x1 - 16, a.y1 - 16), "Refresh", Some(Hit::App(1)), Btn::size(20));
     }
 
-    fn action(&mut self, _id: u32, _long: bool, _sys: &mut Sys) -> Cmd {
+    fn action(&mut self, id: u32, _long: bool, _sys: &mut Sys) -> Cmd {
+        if id == 2 {
+            return Cmd::Push(Box::new(crate::battery::BatteryApp));
+        }
         Cmd::Redraw
     }
 }
@@ -296,6 +301,9 @@ const AUTO_SLEEP: [u32; 6] = [2, 5, 10, 15, 30, 0];
 const S_DASH_NOW: u32 = 11;
 const S_PAGE: u32 = 12;
 const S_SYSTEM: u32 = 13;
+const S_WIFI_IDLE: u32 = 15;
+const T_WIFI_IDLE: u32 = 8;
+const WIFI_IDLE: [u32; 4] = [5, 15, 30, 0];
 const T_WEATHER: u32 = 4;
 
 const T_PASSWORD: u32 = 1;
@@ -359,6 +367,9 @@ impl App for SettingsApp {
         let fr = format!("{} updates", sys.config.get("full_refresh_every"));
         item(cx, &mut y, S_REFRESH, "Full refresh every", &fr, Some("Lower = less ghosting, more flashing"));
         item(cx, &mut y, S_WIFI_AUTO, "Connect Wi-Fi at start", if sys.config.flag("wifi_autostart") { "yes" } else { "no" }, None);
+        let wi = sys.config.get("wifi_idle_off").parse::<u32>().unwrap_or(15);
+        item(cx, &mut y, S_WIFI_IDLE, "Wi-Fi off when idle", &if wi == 0 { "never".to_string() } else { format!("after {wi} min") },
+             Some("Saves battery; comes back when you tap"));
         section(cx, &mut y, "DEVICE");
         item(cx, &mut y, S_SYSTEM, "System info", "battery, memory…", None);
         }
@@ -402,6 +413,8 @@ impl App for SettingsApp {
             }
             S_PASSWORD => Cmd::Dialog(Dialog::input(T_PASSWORD, "New root password", "", "Save").password()),
             S_SYSTEM => Cmd::Push(Box::new(SystemApp)),
+            S_WIFI_IDLE => Cmd::Dialog(Dialog::menu(T_WIFI_IDLE, "Wi-Fi off when idle",
+                WIFI_IDLE.iter().map(|m| if *m == 0 { "Never".to_string() } else { format!("After {m} minutes") }).collect())),
             S_PAGE => {
                 self.page = 1 - self.page;
                 Cmd::Full
@@ -470,6 +483,12 @@ impl App for SettingsApp {
                     if m.0 == "pictures" {
                         let _ = std::fs::create_dir_all(crate::screensaver::pictures_dir(sys));
                     }
+                }
+                Cmd::Redraw
+            }
+            T_WIFI_IDLE => {
+                if let Some(m) = WIFI_IDLE.get(choice) {
+                    sys.config.set("wifi_idle_off", &m.to_string());
                 }
                 Cmd::Redraw
             }
