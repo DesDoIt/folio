@@ -210,12 +210,25 @@ restore_kindle() {
 cleanup() {
     umount_all
     cpu_restore
-    restore_kindle
+    # Shutting down or restarting: don't bring Amazon's UI, X and USB drive mode back first (that
+    # took most of a minute, and shutdown then had to stop them all again). They start normally
+    # on the next boot.
+    case "$ACTION" in
+        reboot|poweroff) log "skipping stock Kindle restore ($ACTION)" ;;
+        *) restore_kindle ;;
+    esac
     rmdir "$LOCK" 2>/dev/null
     log "done (action=$ACTION)"
     case "$ACTION" in
         reboot) sync; reboot ;;
-        poweroff) sync; poweroff ;;
+        poweroff)
+            sync
+            # the e-ink panel keeps its last picture once the power is off
+            [ -x /mnt/us/libkh/bin/fbink ] && { /mnt/us/libkh/bin/fbink -q -c -f >/dev/null 2>&1
+                /mnt/us/libkh/bin/fbink -q -m -M -S 3 "Kindle is off" >/dev/null 2>&1 ||
+                    /mnt/us/libkh/bin/fbink -q -m -y 18 -S 3 "Kindle is off" >/dev/null 2>&1
+                /mnt/us/libkh/bin/fbink -q -m -y -8 "Hold the power button to turn it on" >/dev/null 2>&1; }
+            poweroff ;;
         browser)
             # hand the page to Amazon's experimental browser once the stock UI is up
             url=$(sed -n 2p "$KOS/request" 2>/dev/null)

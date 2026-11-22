@@ -232,6 +232,22 @@ impl Main {
     }
 
     /// Draw the chosen sleep screen (without suspending; the simulator stops here).
+    /// Say what's happening right away when leaving: shutting down takes a few seconds, and the
+    /// Power screen staying up looked stuck.
+    fn goodbye_screen(&mut self, disp: &mut dyn Display, code: i32) {
+        let (title, note) = match code {
+            21 => ("Powering off…", "This takes a few seconds."),
+            20 => ("Restarting…", "The Kindle will start again in about a minute."),
+            0 => ("Returning to the Kindle…", "The Kindle home screen appears in a moment."),
+            _ => return,
+        };
+        let (w, h) = disp.size();
+        let mut c = Canvas::new(w, h);
+        c.text(&mut self.ui.fonts, w / 2, h / 2 - 30, title, Face::Bold, 36, BLACK, Anchor::MM);
+        c.text(&mut self.ui.fonts, w / 2, h / 2 + 30, note, Face::Sans, 20, DARK, Anchor::MM);
+        disp.present(&c, Rect::new(0, 0, w, h), Update::Full);
+    }
+
     fn enter_sleep(&mut self, disp: &mut dyn Display) {
         if !self.sleeping {
             self.sleeping = true;
@@ -446,6 +462,7 @@ impl Main {
         }
         let code = self.ui.quit.unwrap();
         log(&format!("exiting with code {code}"));
+        self.goodbye_screen(disp, code);
         if matches!(code, 0 | 20 | 21) {
             self.sys.ssh.stop();
             self.sys.wifi.stop();

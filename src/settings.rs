@@ -751,7 +751,7 @@ impl App for SetupApp {
                 para(cx, &mut y, "• Tap the top bar's ⌂ to go home and ‹ to go back.");
                 para(cx, &mut y, "• In a book, tap the right side for the next page and the middle for the menu. Hold a word to look it up or highlight it.");
                 para(cx, &mut y, "• Copy books into the “books” folder over USB, or send them from a computer with Upload.");
-                para(cx, &mut y, "• Power off returns to the normal Kindle.");
+                para(cx, &mut y, "• Power → Exit to stock Kindle returns to Amazon’s interface; Power off shuts the Kindle down.");
             }
         }
         let (by, mid) = (a.y1 - 70, a.cx());
