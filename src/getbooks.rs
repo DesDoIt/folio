@@ -109,13 +109,32 @@ fn friendly_curl_error(e: &str) -> String {
 
 /// Download to `dest` (via a temp file), checking that the result looks like an EPUB (zip).
 fn download(urls: &[String], dest: &str) -> Result<(), String> {
+    let r = download_inner(urls, dest);
+    let _ = std::fs::remove_file(format!("{dest}.hdr"));
+    r
+}
+
+/// Bytes received so far and the expected size (from the last Content-Length of the response headers).
+fn progress(dest: &str) -> (u64, Option<u64>) {
+    let got = std::fs::metadata(format!("{dest}.part")).map(|m| m.len()).unwrap_or(0);
+    let hdr = std::fs::read_to_string(format!("{dest}.hdr")).unwrap_or_default();
+    let last = hdr.rsplit("HTTP/").next().unwrap_or("");
+    let total = last.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<u64>().ok()).flatten()
+    });
+    (got, total.filter(|t| *t > 0))
+}
+
+fn download_inner(urls: &[String], dest: &str) -> Result<(), String> {
     let tmp = format!("{dest}.part");
     let mut last = String::from("no download link");
     for url in urls {
         // No --retry: a server under maintenance answers 503 with "Retry-After: 21600", and curl would
         // sleep that long. Instead we fall through to the next mirror; stalled transfers are cut off too.
         let out = Command::new("curl")
-            .args(["-sSfL", "-m", "600", "--connect-timeout", "20", "-y", "45", "-Y", "500", "-A", UA, "-o", &tmp, url])
+            .args(["-sSfL", "-m", "600", "--connect-timeout", "20", "-y", "45", "-Y", "500", "-A", UA,
+                   "-D", &format!("{dest}.hdr"), "-o", &tmp, url])
             .stdin(Stdio::null()).output()
             .map_err(|e| format!("curl not available: {e}"))?;
         if out.status.success() {
@@ -257,7 +276,14 @@ fn safe_filename(title: &str, author: &str) -> String {
 
 enum Job {
     List(Result<Vec<Item>, String>),
-    Downloaded(Result<String, String>),
+}
+
+/// One download in progress; shown as a bar in its book's row.
+struct Dl {
+    dest: String,
+    title: String,
+    slot: Arc<Mutex<Option<Result<(), String>>>>,
+    shown: (u64, Option<u64>),
 }
 
 pub struct GetBooks {
@@ -269,6 +295,8 @@ pub struct GetBooks {
     busy: Option<String>,
     sel: usize,
     last_path: Option<String>,
+    downloads: Vec<Dl>,
+    last_progress: std::time::Instant,
 }
 
 const ID_GUT: u32 = 1_000_001;
@@ -284,7 +312,7 @@ const T_MORE: u32 = 5;
 impl GetBooks {
     pub fn new() -> GetBooks {
         GetBooks { source: Source::Gutenberg, query: None, items: vec![], pager: Pager::new(78), job: None, busy: None,
-                   sel: 0, last_path: None }
+                   sel: 0, last_path: None, downloads: vec![], last_progress: std::time::Instant::now() }
     }
 
     fn spawn(&mut self, label: &str, f: impl FnOnce() -> Job + Send + 'static) {
@@ -296,6 +324,16 @@ impl GetBooks {
         });
         self.job = Some(slot);
         self.busy = Some(label.to_string());
+    }
+
+    fn start_download(&mut self, title: &str, urls: Vec<String>, dest: String) {
+        let slot = Arc::new(Mutex::new(None));
+        let (s2, d2) = (slot.clone(), dest.clone());
+        std::thread::spawn(move || {
+            let r = download(&urls, &d2);
+            *s2.lock().unwrap() = Some(r);
+        });
+        self.downloads.push(Dl { dest, title: title.to_string(), slot, shown: (0, None) });
     }
 
     fn load(&mut self) {
@@ -337,57 +375,122 @@ impl App for GetBooks {
             (None, Source::StandardEbooks) => "Newest from Standard Ebooks".into(),
         };
         cx.bold(a.x0 + 16, a.y0 + 72, &heading, 18, BLACK, Anchor::LT);
+        let docs = format!("{}/documents", sys.us);
+        let elsewhere = self.downloads.iter()
+            .filter(|d| !self.items.iter().any(|it| format!("{docs}/{}", safe_filename(&it.title, &it.author)) == d.dest))
+            .count();
         if let Some(msg) = &self.busy {
             cx.text(a.x1 - 16, a.y0 + 72, msg, 18, DARK, Anchor::RT);
+        } else if elsewhere > 0 {
+            cx.text(a.x1 - 16, a.y0 + 72, &format!("Downloading {elsewhere}…"), 18, DARK, Anchor::RT);
         }
         let items = &self.items;
-        let docs = format!("{}/documents", sys.us);
+        let downloads = &self.downloads;
         let empty = if self.busy.is_some() { "" } else { "Nothing found" };
         self.pager.render(cx, Rect::new(a.x0, a.y0 + 102, a.x1, a.y1), items.len(), empty, |cx, r, i| {
             let it = &items[i];
-            let have = std::path::Path::new(&format!("{docs}/{}", safe_filename(&it.title, &it.author))).exists();
-            let t = cx.ellipsize(&it.title, Face::Bold, 21, r.w() - 80);
+            let path = format!("{docs}/{}", safe_filename(&it.title, &it.author));
+            let have = std::path::Path::new(&path).exists();
+            let t = cx.ellipsize(&it.title, Face::Bold, 21, r.w() - 100);
             cx.bold(r.x0 + 18, r.y0 + 10, &t, 21, BLACK, Anchor::LT);
-            let sub = cx.ellipsize(&it.author, Face::Sans, 17, r.w() - 80);
+            let sub = cx.ellipsize(&it.author, Face::Sans, 17, r.w() - 100);
             cx.text(r.x0 + 18, r.y0 + 38, &sub, 17, BLACK, Anchor::LT);
-            cx.text(r.x0 + 18, r.y0 + 58, &it.info, 13, DARK, Anchor::LT);
-            cx.text(r.x1 - 22, r.cy(), if have { "✓" } else { "↓" }, 26, BLACK, Anchor::RM);
+            if let Some(d) = downloads.iter().find(|d| d.dest == path) {
+                // progress bar in place of the info line, percentage (or size so far) on the right
+                let bar = Rect::new(r.x0 + 18, r.y0 + 60, r.x1 - 100, r.y0 + 70);
+                cx.c.round_rect(bar, 4, WHITE, 2, BLACK);
+                let (got, total) = d.shown;
+                let label = match total {
+                    Some(t) => {
+                        let frac = (got as f64 / t as f64).clamp(0.0, 1.0);
+                        let w = ((bar.w() - 4) as f64 * frac) as i32;
+                        if w > 0 {
+                            cx.c.fill(Rect::new(bar.x0 + 2, bar.y0 + 2, bar.x0 + 2 + w, bar.y1 - 2), BLACK);
+                        }
+                        format!("{}%", (frac * 100.0) as u32)
+                    }
+                    None if got > 0 => crate::apps::human(got),
+                    None => "…".into(),
+                };
+                cx.bold(r.x1 - 18, r.cy(), &label, 18, BLACK, Anchor::RM);
+            } else {
+                cx.text(r.x0 + 18, r.y0 + 58, &it.info, 13, DARK, Anchor::LT);
+                cx.text(r.x1 - 22, r.cy(), if have { "✓" } else { "↓" }, 26, BLACK, Anchor::RM);
+            }
             cx.hit(r, Hit::App(i as u32), None, &it.title);
         });
     }
 
     fn busy(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || !self.downloads.is_empty()
     }
 
     fn poll(&mut self, sys: &mut Sys) -> Cmd {
+        // finished downloads
+        let mut cmds = vec![];
+        let mut i = 0;
+        while i < self.downloads.len() {
+            let r = self.downloads[i].slot.lock().unwrap().take();
+            match r {
+                Some(r) => {
+                    let d = self.downloads.remove(i);
+                    cmds.push(Cmd::Redraw);
+                    cmds.push(match r {
+                        Ok(()) => {
+                            self.last_path = Some(d.dest.clone());
+                            let name = std::path::Path::new(&d.dest).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                            Cmd::Dialog(Dialog::confirm(T_READ, "Downloaded", &format!("{name} is in your library."), "Read now"))
+                        }
+                        Err(e) => Cmd::Dialog(Dialog::message("Download failed", &format!("{}\n{e}", d.title))),
+                    });
+                }
+                None => i += 1,
+            }
+        }
+        // progress: at most every 1.5 s, and only when something visibly changed (e-ink)
+        if self.last_progress.elapsed().as_millis() >= 1500 {
+            let mut changed = false;
+            for d in self.downloads.iter_mut() {
+                let p = progress(&d.dest);
+                let pct = |p: (u64, Option<u64>)| p.1.map(|t| p.0 * 100 / t.max(1));
+                if pct(p) != pct(d.shown) || (p.1.is_none() && p.0 / 50_000 != d.shown.0 / 50_000) {
+                    changed = true;
+                }
+                d.shown = p;
+            }
+            self.last_progress = std::time::Instant::now();
+            if changed {
+                cmds.push(Cmd::Fast);
+            }
+        }
         let done = self.job.as_ref().and_then(|j| j.lock().unwrap().take());
-        let Some(done) = done else { return Cmd::None };
+        let Some(done) = done else {
+            return match cmds.len() {
+                0 => Cmd::None,
+                1 => cmds.pop().unwrap(),
+                _ => Cmd::Batch(cmds),
+            };
+        };
         self.job = None;
         self.busy = None;
-        match done {
+        let done = match done {
             Job::List(Ok(items)) => {
                 self.items = items;
                 Cmd::Redraw
             }
             Job::List(Err(e)) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Couldn't load books", &e))]),
-            Job::Downloaded(Ok(path)) => {
-                self.last_path = Some(path.clone());
-                let name = std::path::Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                let _ = sys;
-                Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::confirm(T_READ, "Downloaded",
-                    &format!("{name} is in your library."), "Read now"))])
-            }
-            Job::Downloaded(Err(e)) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Download failed", &e))]),
-        }
+        };
+        let _ = sys;
+        cmds.insert(0, done);
+        Cmd::Batch(cmds)
     }
 
     fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
         if self.pager.action(id) {
             return Cmd::Redraw;
         }
-        if self.job.is_some() && id >= ID_GUT {
-            return Cmd::Toast("Still working…".into());
+        if self.job.is_some() && id >= ID_GUT && id != ID_LINK {
+            return Cmd::Toast("Still loading…".into());
         }
         match id {
             ID_GUT | ID_SE => {
@@ -404,6 +507,9 @@ impl App for GetBooks {
                 let Some(it) = self.items.get(i as usize) else { return Cmd::None };
                 self.sel = i as usize;
                 let dest = self.dest(sys, it);
+                if self.downloads.iter().any(|d| d.dest == dest) {
+                    return Cmd::Toast("Already downloading".into());
+                }
                 if std::path::Path::new(&dest).exists() {
                     return open_book(sys, &dest);
                 }
@@ -426,9 +532,10 @@ impl App for GetBooks {
             T_DOWNLOAD => {
                 let Some(it) = self.items.get(self.sel).cloned() else { return Cmd::None };
                 let dest = self.dest(sys, &it);
-                let label = format!("Downloading “{}”…", it.title.chars().take(24).collect::<String>());
-                self.spawn(&label, move || Job::Downloaded(download(&it.urls, &dest).map(|_| dest)));
-                Cmd::Redraw
+                if !self.downloads.iter().any(|d| d.dest == dest) {
+                    self.start_download(&it.title, it.urls.clone(), dest);
+                }
+                Cmd::Fast
             }
             T_LINK => {
                 let url = text.trim().to_string();
@@ -438,8 +545,10 @@ impl App for GetBooks {
                 let name = url.rsplit('/').next().unwrap_or("download").split('?').next().unwrap_or("download").to_string();
                 let name = if name.to_lowercase().ends_with(".epub") { name } else { format!("{name}.epub") };
                 let dest = format!("{}/documents/{}", sys.us, name.replace(['\\', ':', '*', '?', '"', '<', '>', '|'], "-"));
-                self.spawn("Downloading…", move || Job::Downloaded(download(&[url], &dest).map(|_| dest)));
-                Cmd::Redraw
+                if !self.downloads.iter().any(|d| d.dest == dest) {
+                    self.start_download(&name, vec![url], dest);
+                }
+                Cmd::Fast
             }
             T_MORE => match choice {
                 0 => Cmd::Push(Box::new(crate::opds::Catalogs::new())),

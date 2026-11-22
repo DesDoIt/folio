@@ -221,6 +221,54 @@ pub fn load(path: &str) -> Result<MobiBook, String> {
     Ok(MobiBook { title, author, chapters })
 }
 
+/// The cover picture of a MOBI/AZW3 file (EXTH 201 = offset from the first image record), if any.
+pub fn cover(path: &str) -> Option<Vec<u8>> {
+    let f = std::fs::read(path).ok()?;
+    if f.len() < 86 || &f[60..68] != b"BOOKMOBI" {
+        return None;
+    }
+    let n = be16(&f, 76);
+    let rec = |i: usize| -> Option<&[u8]> {
+        if i >= n {
+            return None;
+        }
+        let s = be32(&f, 78 + i * 8);
+        let e = if i + 1 < n { be32(&f, 78 + (i + 1) * 8) } else { f.len() };
+        f.get(s..e.min(f.len()).max(s))
+    };
+    let r0 = rec(0)?;
+    if r0.len() < 0x84 || &r0[16..20] != b"MOBI" {
+        return None;
+    }
+    let first_img = be32(r0, 0x6c);
+    if first_img == 0xffff_ffff || first_img == 0 {
+        return None;
+    }
+    let mut off = None;
+    if be32(r0, 0x80) & 0x40 != 0 {
+        let x = 16 + be32(r0, 20);
+        if r0.len() >= x + 12 && &r0[x..x + 4] == b"EXTH" {
+            let mut p = x + 12;
+            for _ in 0..be32(r0, x + 8) {
+                if p + 8 > r0.len() {
+                    break;
+                }
+                let (t, l) = (be32(r0, p), be32(r0, p + 4));
+                if l < 8 || p + l > r0.len() {
+                    break;
+                }
+                if t == 201 && l >= 12 {
+                    off = Some(be32(r0, p + 8));
+                }
+                p += l;
+            }
+        }
+    }
+    let img = rec(first_img + off.unwrap_or(0))?;
+    let is_img = img.starts_with(&[0xff, 0xd8]) || img.starts_with(b"\x89PNG") || img.starts_with(b"GIF8");
+    is_img.then(|| img.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

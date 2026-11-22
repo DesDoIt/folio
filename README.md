@@ -18,7 +18,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 | | | |
 |:-:|:-:|:-:|
 | <img src="docs/screenshots/home.png" width="240" alt="Home screen"><br>Home | <img src="docs/screenshots/reader.png" width="240" alt="Built-in reader"><br>Reader | <img src="docs/screenshots/word-menu.png" width="240" alt="Long-press a word"><br>Define / highlight |
-| <img src="docs/screenshots/get-books.png" width="240" alt="Get Books"><br>Get Books | <img src="docs/screenshots/books.png" width="240" alt="Library"><br>Library | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
+| <img src="docs/screenshots/get-books.png" width="240" alt="Get Books"><br>Get Books | <img src="docs/screenshots/books.png" width="240" alt="Library"><br>Library | <img src="docs/screenshots/books-list.png" width="240" alt="Library as a list"><br>Library (list) |
+| <img src="docs/screenshots/get-books-progress.png" width="240" alt="Download progress"><br>Downloading | <img src="docs/screenshots/news-feeds.png" width="240" alt="News front page"><br>News front page | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
 | <img src="docs/screenshots/news.png" width="240" alt="News feed"><br>News | <img src="docs/screenshots/news-article.png" width="240" alt="News article"><br>Article | <img src="docs/screenshots/wikipedia.png" width="240" alt="Wikipedia article"><br>Wikipedia |
 | <img src="docs/screenshots/web-start.png" width="240" alt="Web browser"><br>Web | <img src="docs/screenshots/web-results.png" width="240" alt="Search results"><br>Search results | <img src="docs/screenshots/sleep-book.png" width="240" alt="Sleep screen: current book"><br>Sleep: current book |
 | <img src="docs/screenshots/sleep-weather.png" width="240" alt="Sleep screen: weather"><br>Sleep: weather | <img src="docs/screenshots/sleep-highlight.png" width="240" alt="Sleep screen: highlight"><br>Sleep: highlight | <img src="docs/screenshots/sleep-date.png" width="240" alt="Sleep screen: date"><br>Sleep: date |
@@ -34,10 +35,12 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
   swipe to turn, chapters, bookmarks, search, footnote pop-ups, images, italics, hyphenation, font size,
   margins and line spacing; position saved per book. Long-press a word to **define** it (English, online)
   or **highlight** its sentence
-- **Books**: your library; tap opens the built-in reader (EPUB, TXT, saved pages) or, for other formats
+- **Books**: your library as a cover shelf (real covers from EPUB/MOBI/AZW3, reading progress under each) or a
+  compact list; tap opens the built-in reader (EPUB, TXT, saved pages) or, for other formats
   (PDF, MOBI/AZW3, comics), KOReader; hold any book to open it in KOReader
 - **Get Books**: search/browse Project Gutenberg and Standard Ebooks, your own **OPDS catalogs** (Calibre's
-  content server, other home library servers; optional login), or download any EPUB link
+  content server, other home library servers; optional login), or download any EPUB link; each download shows a
+  progress bar on its book, and several can run at once
 - **Progress sync** with a KOReader sync server (KOReader's public one or your own): continue a book on your
   phone or another reader, per chapter
 - **Send to Kindle**: open `http://<kindle-ip>:8080` on a phone or computer and upload books over Wi-Fi
@@ -45,7 +48,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 - **Reading stats**: minutes and pages per day, streaks, books finished, a 14-day chart
 
 **Internet**
-- **News**: RSS/Atom feeds; articles open in the reader, full text fetched when feeds only carry summaries,
+- **News**: RSS/Atom feeds as a magazine: a front page with each feed's name, description and latest headline,
+  and story cards with summary, author, time, reading time and pictures; articles open in the reader, full text fetched when feeds only carry summaries,
   "Save for later" for offline reading
 - **Wikipedia**: search or random article, sections become chapters, every opened article cached offline;
   8 languages
@@ -94,7 +98,7 @@ and restarts the stock Kindle services.
 
 | Path | What |
 |---|---|
-| `src/` | Rust GUI: `fb.rs` (EPDC framebuffer), `input.rs` (touch), `canvas.rs` (drawing + fonts), `ui.rs` (toolkit), `apps.rs` (home, books, files, notes), `reader.rs` + `epub.rs` (reader), `getbooks.rs`, `upload.rs`, `news.rs`, `wiki.rs`, `web.rs`, `highlights.rs` (highlights, dictionary, stats), `games.rs`, `sketch.rs`, `dashboard.rs`, `term.rs`, `settings.rs`, `sys.rs` |
+| `src/` | Rust GUI: `covers.rs` (library covers), `fb.rs` (EPDC framebuffer), `input.rs` (touch), `canvas.rs` (drawing + fonts), `ui.rs` (toolkit), `apps.rs` (home, books, files, notes), `reader.rs` + `epub.rs` (reader), `getbooks.rs`, `upload.rs`, `news.rs`, `wiki.rs`, `web.rs`, `highlights.rs` (highlights, dictionary, stats), `games.rs`, `sketch.rs`, `dashboard.rs`, `term.rs`, `settings.rs`, `sys.rs` |
 | `host/` | Kindle-side launcher and library scriptlet |
 | `rootfs/` | Files overlaid onto the Alpine image |
 | `build/` | Docker-based build scripts (no local Rust or ARM emulation needed) |

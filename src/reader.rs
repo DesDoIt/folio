@@ -645,6 +645,7 @@ impl Reader {
             let line = format!("{}\t{}\t{}\t{}\n", self.path, self.book.title.replace('\t', " "),
                                self.book.author.replace('\t', " "), self.progress());
             let _ = std::fs::write(format!("{}/kos/last-book.txt", sys.us), line);
+            crate::covers::save_progress(sys, &self.path, self.progress(), &self.book.title, &self.book.author);
         }
     }
 

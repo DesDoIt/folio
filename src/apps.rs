@@ -198,10 +198,19 @@ pub struct Books {
     pager: Pager,
     books: Vec<Book>,
     by_title: bool,
+    covers_view: bool,
+    covers: crate::covers::Covers,
+    loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    covers_shown: usize,
+    progress: std::collections::HashMap<String, crate::covers::Progress>,
 }
 
 const ID_SORT: u32 = 1_000_000;
 const ID_KOREADER: u32 = 1_000_001;
+const ID_VIEW: u32 = 1_000_002;
+const LIST_ROW: i32 = 76;
+const GRID_ROW: i32 = 289;
+const GRID_COLS: usize = 3;
 
 fn mtime(m: &std::fs::Metadata) -> i64 {
     use std::os::unix::fs::MetadataExt;
@@ -210,9 +219,31 @@ fn mtime(m: &std::fs::Metadata) -> i64 {
 
 impl Books {
     pub fn new(sys: &Sys) -> Books {
-        let mut b = Books { pager: Pager::new(76), books: vec![], by_title: false };
+        let covers_view = sys.config.get("books_view") != "list";
+        let mut b = Books { pager: Pager::new(if covers_view { GRID_ROW } else { LIST_ROW }), books: vec![], by_title: false,
+                            covers_view, covers: Default::default(), loading: Default::default(), covers_shown: 0,
+                            progress: Default::default() };
         b.scan(sys);
         b
+    }
+
+    /// Start loading covers for the books on the current page (and the next, so paging feels instant).
+    fn want_covers(&mut self, sys: &Sys) {
+        if !self.covers_view {
+            return;
+        }
+        let per = GRID_COLS * 2;
+        let from = self.pager.page * per;
+        let want: Vec<(String, i64)> = self.books.iter().skip(from).take(per * 2)
+            .filter(|b| !b.drm).map(|b| (b.path.clone(), b.mtime)).collect();
+        crate::covers::load(&sys.us, want, self.covers.clone(), self.loading.clone());
+    }
+
+    fn display(&self, b: &Book) -> (String, String, u32) {
+        match self.progress.get(&b.path) {
+            Some(p) => (if p.title.is_empty() { b.title.clone() } else { p.title.clone() }, p.author.clone(), p.percent),
+            None => (b.title.clone(), String::new(), 0),
+        }
     }
 
     fn scan(&mut self, sys: &Sys) {
@@ -247,7 +278,30 @@ impl Books {
             found.sort_by_key(|b| -b.mtime);
         }
         self.books = found;
+        self.progress = crate::covers::load_progress(sys);
     }
+}
+
+/// A cover drawn from the title, for books without a picture (TXT, PDF, store books…).
+fn plain_cover(cx: &mut Ctx, r: Rect, title: &str, author: &str, ext: &str, grey: bool) {
+    let ink = if grey { MID } else { BLACK };
+    cx.c.fill(r, WHITE);
+    cx.c.outline(r, 2, ink);
+    cx.c.outline(r.inset(6), 1, ink);
+    let size = cx.sz(17);
+    let lines = cx.f.wrap(title, Face::Bold, size, r.w() - 28);
+    let n = lines.len().min(5) as i32;
+    let mut y = r.y0 + (r.h() - 40 - n * (size as i32 + 4)) / 2;
+    for l in lines.iter().take(5) {
+        cx.bold(r.cx(), y, l, 17, ink, Anchor::MT);
+        y += size as i32 + 4;
+    }
+    if !author.is_empty() {
+        let a = cx.ellipsize(author, Face::Italic, 12, r.w() - 24);
+        cx.text_face(r.cx(), y + 8, &a, Face::Italic, 12, DARK, Anchor::MT);
+    }
+    cx.c.fill(Rect::new(r.cx() - 20, r.y1 - 34, r.cx() + 20, r.y1 - 33), ink);
+    cx.bold(r.cx(), r.y1 - 26, ext, 12, ink, Anchor::MT);
 }
 
 impl App for Books {
@@ -256,37 +310,127 @@ impl App for Books {
     }
 
     fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
-        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x0 + 290, a.y0 + 62), "Open KOReader", Some(Hit::App(ID_KOREADER)),
-                  Btn { inverted: true, ..Btn::size(20) });
-        cx.text(a.cx(), a.y1 - 14, "Tap: read  ·  Hold: open in KOReader", 14, DARK, Anchor::MM);
+        let b = Btn::size(19);
+        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x0 + 222, a.y0 + 62), "Open KOReader", Some(Hit::App(ID_KOREADER)),
+                  Btn { inverted: true, ..b });
         let label = if self.by_title { "Sort: A–Z" } else { "Sort: Recent" };
-        cx.button(Rect::new(a.x1 - 200, a.y0 + 10, a.x1 - 12, a.y0 + 62), label, Some(Hit::App(ID_SORT)), Btn::size(20));
+        cx.button(Rect::new(a.x0 + 230, a.y0 + 10, a.x0 + 410, a.y0 + 62), label, Some(Hit::App(ID_SORT)), b);
+        let view = if self.covers_view { "≡ List" } else { "▦ Covers" };
+        cx.button(Rect::new(a.x0 + 418, a.y0 + 10, a.x1 - 12, a.y0 + 62), view, Some(Hit::App(ID_VIEW)), b);
+        cx.text(a.cx(), a.y1 - 14, "Tap: read  ·  Hold: open in KOReader", 14, DARK, Anchor::MM);
+        let area = Rect::new(a.x0, a.y0 + 74, a.x1, a.y1 - 26);
         let books = &self.books;
-        self.pager.render(cx, Rect::new(a.x0, a.y0 + 74, a.x1, a.y1), books.len(), "No books in documents/",
-                          |cx, r, i| {
-            let b = &books[i];
-            let fill = if b.drm { MID } else { BLACK };
-            let t = cx.ellipsize(&b.title, Face::Bold, 22, r.w() - 130);
-            cx.bold(r.x0 + 20, r.y0 + 12, &t, 22, fill, Anchor::LT);
-            let sub = format!("{} · {}{}", b.ext, human(b.size), if b.drm { "  ·  Amazon DRM – stock Kindle only" } else { "" });
-            cx.text(r.x0 + 20, r.y0 + 44, &sub, 16, DARK, Anchor::LT);
-            let tag = Rect::new(r.x1 - 92, r.y0 + 18, r.x1 - 20, r.y0 + 54);
-            cx.c.round_rect(tag, 8, WHITE, 2, fill);
-            let e: String = b.ext.chars().take(4).collect();
-            cx.bold(tag.cx(), tag.cy(), &e, 16, fill, Anchor::MM);
-            cx.hit(r, Hit::App(i as u32), Some(Hit::App(i as u32)), &b.title);
+        if !self.covers_view {
+            let progress = &self.progress;
+            self.pager.render(cx, area, books.len(), "No books in documents/", |cx, r, i| {
+                let b = &books[i];
+                let fill = if b.drm { MID } else { BLACK };
+                let p = progress.get(&b.path);
+                let title = p.map(|p| p.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| b.title.clone());
+                let t = cx.ellipsize(&title, Face::Bold, 22, r.w() - 130);
+                cx.bold(r.x0 + 20, r.y0 + 12, &t, 22, fill, Anchor::LT);
+                let mut sub = vec![];
+                if let Some(a) = p.map(|p| p.author.as_str()).filter(|a| !a.is_empty()) {
+                    sub.push(a.to_string());
+                }
+                sub.push(format!("{} · {}", b.ext, human(b.size)));
+                if let Some(p) = p.filter(|p| p.percent > 0) {
+                    sub.push(format!("{}% read", p.percent));
+                }
+                if b.drm {
+                    sub.push("Amazon DRM – stock Kindle only".into());
+                }
+                let sub = cx.ellipsize(&sub.join("  ·  "), Face::Sans, 16, r.w() - 130);
+                cx.text(r.x0 + 20, r.y0 + 44, &sub, 16, DARK, Anchor::LT);
+                let tag = Rect::new(r.x1 - 92, r.y0 + 18, r.x1 - 20, r.y0 + 54);
+                cx.c.round_rect(tag, 8, WHITE, 2, fill);
+                let e: String = b.ext.chars().take(4).collect();
+                cx.bold(tag.cx(), tag.cy(), &e, 16, fill, Anchor::MM);
+                cx.hit(r, Hit::App(i as u32), Some(Hit::App(i as u32)), &b.title);
+            });
+            return;
+        }
+        // cover grid: each pager "row" holds GRID_COLS books
+        let rows = (books.len() + GRID_COLS - 1) / GRID_COLS;
+        let covers = self.covers.lock().unwrap();
+        let shown: Vec<(String, String, u32)> = books.iter().map(|b| self.display(b)).collect();
+        self.pager.render(cx, area, rows, "No books in documents/", |cx, r, row| {
+            let cw = (r.w() - 24) / GRID_COLS as i32;
+            for col in 0..GRID_COLS {
+                let i = row * GRID_COLS + col;
+                let Some(b) = books.get(i) else { break };
+                let (title, author, percent) = &shown[i];
+                let cell = Rect::new(r.x0 + 12 + col as i32 * cw, r.y0, r.x0 + 12 + (col as i32 + 1) * cw, r.y1);
+                let slot = Rect::new(cell.cx() - crate::covers::COVER_W / 2, cell.y0 + 10,
+                                     cell.cx() + crate::covers::COVER_W / 2, cell.y0 + 10 + crate::covers::COVER_H);
+                match covers.get(&b.path).and_then(|c| c.as_ref()) {
+                    Some(g) => {
+                        // bottom-align the picture in its slot, like books standing on a shelf
+                        let (x, y) = (slot.cx() - g.w / 2, slot.y1 - g.h);
+                        cx.c.blit(&g.px, g.w, g.h, x, y);
+                        cx.c.outline(Rect::new(x - 1, y - 1, x + g.w + 1, y + g.h + 1), 1, BLACK);
+                    }
+                    None => plain_cover(cx, slot, title, author, &b.ext, b.drm),
+                }
+                let tw = cw - 16;
+                let size = cx.sz(15);
+                let lines = cx.f.wrap(title, Face::Bold, size, tw);
+                let mut y = slot.y1 + 8;
+                for (k, l) in lines.iter().take(2).enumerate() {
+                    let l = if k == 1 && lines.len() > 2 { cx.ellipsize(&format!("{l}…"), Face::Bold, 15, tw) } else { l.clone() };
+                    cx.bold(cell.cx(), y, &l, 15, if b.drm { MID } else { BLACK }, Anchor::MT);
+                    y += size as i32 + 3;
+                }
+                let my = slot.y1 + 50;
+                if *percent > 0 {
+                    let bar = Rect::new(cell.x0 + 14, my + 4, cell.x1 - 54, my + 12);
+                    cx.c.round_rect(bar, 4, WHITE, 1, BLACK);
+                    let w = (bar.w() - 2) * (*percent as i32).min(100) / 100;
+                    if w > 0 {
+                        cx.c.fill(Rect::new(bar.x0 + 1, bar.y0 + 1, bar.x0 + 1 + w, bar.y1 - 1), BLACK);
+                    }
+                    cx.text(cell.x1 - 14, my, &format!("{percent}%"), 13, DARK, Anchor::RT);
+                } else {
+                    let m = if b.drm { "Kindle store".to_string() } else { format!("{} · new", b.ext) };
+                    cx.text(cell.cx(), my, &m, 13, DARK, Anchor::MT);
+                }
+                cx.hit(cell, Hit::App(i as u32), Some(Hit::App(i as u32)), &b.title);
+            }
         });
+    }
+
+    fn busy(&self) -> bool {
+        self.loading.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn poll(&mut self, sys: &mut Sys) -> Cmd {
+        let n = self.covers.lock().unwrap().len();
+        if n != self.covers_shown && !self.busy() {
+            self.covers_shown = n;
+            self.want_covers(sys); // in case the page changed while loading
+            return Cmd::Redraw;
+        }
+        Cmd::None
     }
 
     fn action(&mut self, id: u32, long: bool, sys: &mut Sys) -> Cmd {
         if self.pager.action(id) {
+            self.want_covers(sys);
             return Cmd::Redraw;
         }
         match id {
             ID_SORT => {
                 self.by_title = !self.by_title;
                 self.scan(sys);
+                self.want_covers(sys);
                 Cmd::Redraw
+            }
+            ID_VIEW => {
+                self.covers_view = !self.covers_view;
+                sys.config.set("books_view", if self.covers_view { "covers" } else { "list" });
+                self.pager = Pager::new(if self.covers_view { GRID_ROW } else { LIST_ROW });
+                self.want_covers(sys);
+                Cmd::Full
             }
             ID_KOREADER => open_koreader(sys, None),
             i => match self.books.get(i as usize) {
@@ -300,12 +444,18 @@ impl App for Books {
         }
     }
 
-    fn gesture(&mut self, g: &Gesture, _sys: &mut Sys) -> Cmd {
-        if self.pager.swipe(g) { Cmd::Redraw } else { Cmd::None }
+    fn gesture(&mut self, g: &Gesture, sys: &mut Sys) -> Cmd {
+        if self.pager.swipe(g) {
+            self.want_covers(sys);
+            Cmd::Redraw
+        } else {
+            Cmd::None
+        }
     }
 
     fn on_show(&mut self, sys: &mut Sys) {
         self.scan(sys);
+        self.want_covers(sys);
     }
 }
 

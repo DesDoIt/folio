@@ -8,6 +8,7 @@ mod apps;
 mod battery;
 mod bootmenu;
 mod canvas;
+mod covers;
 mod dashboard;
 mod epub;
 mod fb;
@@ -580,6 +581,7 @@ fn sim_main(out: &str) -> i32 {
     let us = sys::userstore(true);
     make_userstore(&us);
     let mut s = SimRun { m: Main::new(true, 600, 800), disp: fb::Sim::new(600, 800, out), n: 0 };
+    s.m.sys.config.set("books_view", "list"); // the script taps books by name; the cover view gets its own shots
     s.shot("home");
     s.tap("Books");
     s.shot("books");
@@ -696,6 +698,13 @@ fn sim_main(out: &str) -> i32 {
     if s.m.ui.find_label("The Time Machine").is_some() {
         s.tap("The Time Machine");
         s.tap("Download");
+        for _ in 0..6 {
+            s.settle(700);
+            if s.m.ui.find_label("Read now").is_some() {
+                break;
+            }
+            s.shot("getbooks-progress");
+        }
         s.wait_idle(120);
         s.shot("getbooks-downloaded");
         if s.m.ui.find_label("Read now").is_some() {
@@ -705,6 +714,18 @@ fn sim_main(out: &str) -> i32 {
             s.tap("Back to library");
         }
     }
+    s.tap("⌂");
+    // library views: covers (with the downloaded book's real cover) and the list
+    s.tap("Books");
+    s.wait_idle(30);
+    if s.m.ui.find_label("≡ List").is_none() {
+        s.tap("▦ Covers");
+        s.wait_idle(30);
+    }
+    s.shot("books-covers");
+    s.tap("≡ List");
+    s.shot("books-list");
+    s.tap("▦ Covers");
     s.tap("⌂");
     // Web browser: start page, live search, follow a result, reading view
     s.tap("Web");
@@ -886,12 +907,17 @@ fn sim_main(out: &str) -> i32 {
     s.shot("stats");
     s.tap("⌂");
     // News: a local sample feed (original text, so screenshots carry no third-party articles)
-    let feed = format!("file://{}/tests/fixtures/sample-feed.xml", std::env::current_dir().unwrap().display());
+    let fixtures = format!("{}/tests/fixtures", std::env::current_dir().unwrap().display());
+    let xml = std::fs::read_to_string(format!("{fixtures}/sample-feed.xml")).unwrap_or_default()
+        .replace("{FIXTURES}", &format!("file://{fixtures}"));
     let _ = std::fs::create_dir_all(format!("{}/kos", s.m.sys.us));
+    let feed = format!("file://{}/kos/sample-feed.xml", s.m.sys.us);
+    let _ = std::fs::write(format!("{}/kos/sample-feed.xml", s.m.sys.us), xml);
     let _ = std::fs::write(format!("{}/kos/feeds.txt", s.m.sys.us), format!("{feed}\nhttps://hnrss.org/frontpage\n"));
     s.tap("News");
+    s.wait_idle(60);
     s.shot("news-feeds");
-    s.tap(feed.split("://").nth(1).unwrap());
+    s.tap("Example Gazette");
     s.wait_idle(60);
     s.dismiss();
     s.shot("news-items");

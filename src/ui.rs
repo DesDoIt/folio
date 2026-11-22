@@ -126,6 +126,10 @@ impl<'a> Ctx<'a> {
         let size = self.sz(size);
         self.c.text(self.f, x, y, s, Face::Bold, size, color, anchor)
     }
+    pub fn text_face(&mut self, x: i32, y: i32, s: &str, face: Face, size: u16, color: u8, anchor: Anchor) -> i32 {
+        let size = self.sz(size);
+        self.c.text(self.f, x, y, s, face, size, color, anchor)
+    }
     pub fn mono(&mut self, x: i32, y: i32, s: &str, size: u16, color: u8) -> i32 {
         self.c.text(self.f, x, y, s, Face::Mono, size, color, Anchor::LT)
     }
