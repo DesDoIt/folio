@@ -35,7 +35,10 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
   or **highlight** its sentence
 - **Books**: your library; tap opens the built-in reader (EPUB, TXT, saved pages) or, for other formats
   (PDF, MOBI/AZW3, comics), KOReader; hold any book to open it in KOReader
-- **Get Books**: search/browse Project Gutenberg and Standard Ebooks, or download any EPUB link
+- **Get Books**: search/browse Project Gutenberg and Standard Ebooks, your own **OPDS catalogs** (Calibre's
+  content server, other home library servers; optional login), or download any EPUB link
+- **Progress sync** with a KOReader sync server (KOReader's public one or your own): continue a book on your
+  phone or another reader, per chapter
 - **Send to Kindle**: open `http://<kindle-ip>:8080` on a phone or computer and upload books over Wi-Fi
 - **Highlights**: everything you highlighted, plus import of the Kindle's `My Clippings.txt`
 - **Reading stats**: minutes and pages per day, streaks, books finished, a 14-day chart

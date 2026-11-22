@@ -283,6 +283,7 @@ const REFRESH: [u32; 5] = [4, 8, 12, 20, 40];
 pub struct SettingsApp {
     sync: Option<Slot<bool>>,
     page: usize,
+    draft: Vec<String>,
 }
 
 const S_SSH: u32 = 1;
@@ -302,6 +303,12 @@ const S_DASH_NOW: u32 = 11;
 const S_PAGE: u32 = 12;
 const S_SYSTEM: u32 = 13;
 const S_WIFI_IDLE: u32 = 15;
+const S_KOSYNC: u32 = 16;
+const T_SYNC_SERVER: u32 = 9;
+const T_SYNC_USER: u32 = 10;
+const T_SYNC_PASS: u32 = 11;
+const T_SYNC_REGISTER: u32 = 12;
+const T_SYNC_SIGNOUT: u32 = 13;
 const T_WIFI_IDLE: u32 = 8;
 const WIFI_IDLE: [u32; 4] = [5, 15, 30, 0];
 const T_WEATHER: u32 = 4;
@@ -312,7 +319,7 @@ const T_REFRESH: u32 = 3;
 
 impl SettingsApp {
     pub fn new() -> SettingsApp {
-        SettingsApp { sync: None, page: 0 }
+        SettingsApp { sync: None, page: 0, draft: vec![] }
     }
 }
 
@@ -370,6 +377,10 @@ impl App for SettingsApp {
         let wi = sys.config.get("wifi_idle_off").parse::<u32>().unwrap_or(15);
         item(cx, &mut y, S_WIFI_IDLE, "Wi-Fi off when idle", &if wi == 0 { "never".to_string() } else { format!("after {wi} min") },
              Some("Saves battery; comes back when you tap"));
+        section(cx, &mut y, "READING PROGRESS SYNC");
+        let acct = sys.config.get("sync_user").to_string();
+        item(cx, &mut y, S_KOSYNC, "KOReader sync account", if acct.is_empty() { "off" } else { &acct },
+             Some("Continue books across devices"));
         section(cx, &mut y, "DEVICE");
         item(cx, &mut y, S_SYSTEM, "System info", "battery, memory…", None);
         }
@@ -413,6 +424,17 @@ impl App for SettingsApp {
             }
             S_PASSWORD => Cmd::Dialog(Dialog::input(T_PASSWORD, "New root password", "", "Save").password()),
             S_SYSTEM => Cmd::Push(Box::new(SystemApp)),
+            S_KOSYNC => {
+                if sys.config.get("sync_user").is_empty() {
+                    self.draft.clear();
+                    let server = Some(sys.config.get("sync_server").to_string()).filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| crate::sync::DEFAULT_SERVER.into());
+                    Cmd::Dialog(Dialog::input(T_SYNC_SERVER, "Sync server", &server, "Next")
+                        .with_message("KOReader's public server works; use the same account as in KOReader"))
+                } else {
+                    Cmd::Dialog(Dialog::confirm(T_SYNC_SIGNOUT, "Sign out of sync?", sys.config.get("sync_user"), "Sign out"))
+                }
+            }
             S_WIFI_IDLE => Cmd::Dialog(Dialog::menu(T_WIFI_IDLE, "Wi-Fi off when idle",
                 WIFI_IDLE.iter().map(|m| if *m == 0 { "Never".to_string() } else { format!("After {m} minutes") }).collect())),
             S_PAGE => {
@@ -485,6 +507,44 @@ impl App for SettingsApp {
                     }
                 }
                 Cmd::Redraw
+            }
+            T_SYNC_SERVER => {
+                self.draft = vec![text.trim().trim_end_matches('/').to_string()];
+                Cmd::Dialog(Dialog::input(T_SYNC_USER, "Username", "", "Next"))
+            }
+            T_SYNC_USER => {
+                self.draft.push(text.trim().to_string());
+                Cmd::Dialog(Dialog::input(T_SYNC_PASS, "Password", "", "Sign in").password())
+            }
+            T_SYNC_PASS | T_SYNC_REGISTER => {
+                if tag == T_SYNC_PASS {
+                    self.draft.push(crate::sync::hex(&crate::sync::md5(text.as_bytes())));
+                }
+                if self.draft.len() < 3 || self.draft[1].is_empty() {
+                    return Cmd::None;
+                }
+                let acct = crate::sync::Account { server: self.draft[0].clone(), user: self.draft[1].clone(), key: self.draft[2].clone() };
+                let result = if tag == T_SYNC_REGISTER { acct.register().map(|_| true) } else { acct.authorize() };
+                match result {
+                    Ok(true) => {
+                        sys.config.set("sync_server", &acct.server);
+                        sys.config.set("sync_user", &acct.user);
+                        sys.config.set("sync_key", &acct.key);
+                        if sys.config.get("sync_device_id").is_empty() {
+                            let seed = format!("{:?}{}", std::time::SystemTime::now(), std::process::id());
+                            sys.config.set("sync_device_id", &crate::sync::hex(&crate::sync::md5(seed.as_bytes())));
+                        }
+                        Cmd::Toast("Sync is on".into())
+                    }
+                    Ok(false) => Cmd::Dialog(Dialog::confirm(T_SYNC_REGISTER, "Account not found",
+                        "Unknown user or wrong password. Create a new account with these details?", "Create account")),
+                    Err(e) => Cmd::Dialog(Dialog::message("Sync", &e)),
+                }
+            }
+            T_SYNC_SIGNOUT => {
+                sys.config.set("sync_user", "");
+                sys.config.set("sync_key", "");
+                Cmd::Toast("Signed out".into())
             }
             T_WIFI_IDLE => {
                 if let Some(m) = WIFI_IDLE.get(choice) {

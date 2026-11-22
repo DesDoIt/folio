@@ -73,6 +73,8 @@ Kindle Linux fetches data from these services only when you use the related feat
 - **Project Gutenberg** (via the Gutendex API and gutenberg.org mirrors) and **Standard Ebooks**
   (CC0 1.0 for their production work): public-domain books.
 - **dictionaryapi.dev** (definitions), **DuckDuckGo**, **Marginalia** (search).
+- **KOReader sync server** (only if you sign in): a book fingerprint and your reading position.
+- **OPDS catalogs** you add yourself (e.g. your Calibre server).
 
 ## Screenshots (`docs/screenshots/`)
 

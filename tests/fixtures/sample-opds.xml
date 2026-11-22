@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test OPDS catalog for the simulator (relative links resolve to files in this folder). -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Home Library</title>
+  <link rel="search" type="application/atom+xml" href="sample-opds-books.xml?q={searchTerms}"/>
+  <entry>
+    <title>Recently added</title>
+    <link type="application/atom+xml;profile=opds-catalog;kind=acquisition" href="sample-opds-books.xml"/>
+  </entry>
+  <entry>
+    <title>By author</title>
+    <link type="application/atom+xml;profile=opds-catalog;kind=navigation" href="sample-opds-books.xml"/>
+  </entry>
+</feed>

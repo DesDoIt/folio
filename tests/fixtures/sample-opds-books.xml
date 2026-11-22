@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Recently added</title>
+  <entry>
+    <title>A Sample Book (from the catalog)</title>
+    <author><name>Kindle Linux</name></author>
+    <link type="application/x-mobipocket-ebook" rel="http://opds-spec.org/acquisition" href="missing.mobi"/>
+    <link type="application/epub+zip" rel="http://opds-spec.org/acquisition" href="sample.epub"/>
+  </entry>
+</feed>

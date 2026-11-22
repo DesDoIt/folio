@@ -345,6 +345,10 @@ pub struct Reader {
     link_boxes: Vec<(Rect, u32)>,
     /// footnote target waiting for "Go there"
     note_target: Option<(usize, usize)>,
+    /// progress sync: remote position offered on open, our position pushed on close
+    sync_pull: Option<Arc<Mutex<Option<(f64, String, String)>>>>,
+    sync_offer: Option<(usize, usize)>,
+    synced_once: bool,
     /// HTML to keep if the user picks "Save for later" (articles, web pages)
     save_html: Option<String>,
     words: Vec<(Rect, usize, String)>,
@@ -373,6 +377,7 @@ const TAG_WORD: u32 = 3;
 const TAG_LAYOUT: u32 = 4;
 const TAG_NOTE: u32 = 5;
 const TAG_SEARCH: u32 = 6;
+const TAG_SYNC: u32 = 7;
 const ID_LINK: u32 = 0x4000_0000;
 const ID_PREV: u32 = 1;
 const ID_NEXT: u32 = 2;
@@ -391,7 +396,7 @@ impl Reader {
         let (chapter, offset) = load_positions(sys).get(key).copied().unwrap_or((0, 0));
         let chapter = chapter.min(book.spine.len().saturating_sub(1));
         Reader { path: key.into(), book, chapter, pages: vec![], page: 0, fs, layout: Layout::from_config(sys), laid_out: None,
-                 want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), links: vec![],
+                 want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), sync_pull: None, sync_offer: None, synced_once: false, links: vec![],
                  link_boxes: vec![], note_target: None, save_html: None,
                  words: vec![], sel_word: None, define_job: None, last_turn: std::time::Instant::now(),
                  menu: vec![] }
@@ -516,6 +521,48 @@ impl Reader {
         Cmd::Dialog(Dialog::menu(TAG_LAYOUT, "Layout", vec![
             format!("Margins: {m}"), format!("Line spacing: {s}"),
             format!("Hyphenation: {}", if self.layout.hyphenate { "on" } else { "off" }), "Done".into()]))
+    }
+
+    /// Book-level position (0..1) for syncing: chapter + fraction of the chapter.
+    fn fraction(&self) -> f64 {
+        let n = self.book.spine.len().max(1) as f64;
+        let within = if self.pages.len() > 1 { self.page as f64 / self.pages.len() as f64 } else { 0.0 };
+        ((self.chapter as f64 + within) / n).min(1.0)
+    }
+
+    /// Ask the sync server for this book's last position (background thread).
+    fn start_sync_pull(&mut self, sys: &Sys) {
+        if !std::path::Path::new(&self.path).is_file() {
+            return;
+        }
+        let Some(acct) = crate::sync::Account::from_config(&sys.config) else { return };
+        let path = self.path.clone();
+        let slot = Arc::new(Mutex::new(None));
+        let s2 = slot.clone();
+        std::thread::spawn(move || {
+            if let Some(doc) = crate::sync::document_id(&path) {
+                if let Ok(Some(p)) = acct.pull(&doc) {
+                    *s2.lock().unwrap() = Some(p);
+                }
+            }
+        });
+        self.sync_pull = Some(slot);
+    }
+
+    fn sync_push(&self, sys: &Sys) {
+        if !std::path::Path::new(&self.path).is_file() {
+            return;
+        }
+        let Some(acct) = crate::sync::Account::from_config(&sys.config) else { return };
+        let (path, frac, chapter) = (self.path.clone(), self.fraction(), self.chapter);
+        let device = sys.config.get("sync_device_id").to_string();
+        std::thread::spawn(move || {
+            if let Some(doc) = crate::sync::document_id(&path) {
+                if let Err(e) = acct.push(&doc, frac, chapter, &device) {
+                    crate::sys::log(&format!("sync push: {e}"));
+                }
+            }
+        });
     }
 
     pub fn set_save_html(&mut self, html: String) {
@@ -823,6 +870,13 @@ impl App for Reader {
                 Cmd::Toast("Highlighted".into())
             }
             (TAG_WORD, _) => Cmd::None,
+            (TAG_SYNC, _) => match self.sync_offer.take() {
+                Some((c, off)) => {
+                    self.jump(c, off);
+                    Cmd::Full
+                }
+                None => Cmd::None,
+            },
             (TAG_NOTE, _) => match self.note_target.take() {
                 Some((c, off)) => {
                     self.jump(c, off);
@@ -867,10 +921,24 @@ impl App for Reader {
     }
 
     fn busy(&self) -> bool {
-        self.define_job.is_some()
+        self.define_job.is_some() || self.sync_pull.is_some()
     }
 
     fn poll(&mut self, _sys: &mut Sys) -> Cmd {
+        let pulled = self.sync_pull.as_ref().and_then(|s| s.lock().unwrap().take());
+        if let Some((pct, progress, device)) = pulled {
+            self.sync_pull = None;
+            let mine = self.fraction();
+            if pct > mine + 0.01 && device != "Kindle Linux" {
+                let n = self.book.spine.len().max(1);
+                let ch = crate::sync::chapter_from_xpointer(&progress).unwrap_or((pct * n as f64) as usize).min(n - 1);
+                let within = (pct * n as f64 - ch as f64).clamp(0.0, 1.0);
+                let len: usize = self.book.chapter_blocks(ch).last().map_or(0, |b| b.start + b.chars());
+                self.sync_offer = Some((ch, (within * len as f64) as usize));
+                return Cmd::Dialog(Dialog::confirm(TAG_SYNC, "Continue reading?",
+                    &format!("{device} is at {:.0}%. You're at {:.0}% here.", pct * 100.0, mine * 100.0), "Jump there"));
+            }
+        }
         let done = self.define_job.as_ref().and_then(|j| j.lock().unwrap().take());
         let Some(done) = done else { return Cmd::None };
         self.define_job = None;
@@ -882,6 +950,10 @@ impl App for Reader {
     }
 
     fn on_show(&mut self, sys: &mut Sys) {
+        if self.sync_pull.is_none() && self.sync_offer.is_none() && !self.synced_once {
+            self.synced_once = true;
+            self.start_sync_pull(sys);
+        }
         let picked = self.pick.lock().unwrap().take();
         if let Some((c, off)) = picked {
             self.jump(c, off);
@@ -892,6 +964,7 @@ impl App for Reader {
     fn on_hide(&mut self, sys: &mut Sys) {
         if self.laid_out.is_some() {
             self.save(sys);
+            self.sync_push(sys);
         }
     }
 }

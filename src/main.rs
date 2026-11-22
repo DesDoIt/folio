@@ -20,10 +20,12 @@ mod input;
 mod json;
 mod mobi;
 mod news;
+mod opds;
 mod reader;
 mod screensaver;
 mod settings;
 mod sketch;
+mod sync;
 mod sys;
 mod term;
 mod ui;
@@ -607,6 +609,7 @@ fn sim_main(out: &str) -> i32 {
     s.tap("◀ Back to first page");
     s.shot("settings");
     s.tap("More settings ▶");
+    s.shot("settings-page2");
     s.tap("Time zone");
     s.shot("settings-tz");
     s.tap("Asia/Kolkata");
@@ -798,6 +801,33 @@ fn sim_main(out: &str) -> i32 {
                 Err(e) => println!("azw3 open failed: {e}"),
             }
         }
+    }
+    // --- OPDS catalog (local fixture over file:// URLs) ---
+    {
+        let cwd = std::env::current_dir().unwrap().display().to_string();
+        let _ = std::fs::write(format!("{}/kos/opds.txt", s.m.sys.us),
+                               format!("Home Library\tfile://{cwd}/tests/fixtures/sample-opds.xml\t\t\n"));
+        s.tap("Get Books");
+        s.wait_idle(60);
+        s.dismiss();
+        s.tap("More…");
+        s.tap("My catalogs (OPDS, Calibre…)");
+        s.shot("opds-catalogs");
+        s.tap("Home Library");
+        s.wait_idle(20);
+        s.shot("opds-root");
+        s.tap("Recently added");
+        s.wait_idle(20);
+        s.shot("opds-books");
+        s.tap("A Sample Book (from the catalog)");
+        s.tap("Download");
+        s.wait_idle(30);
+        s.shot("opds-downloaded");
+        s.dismiss();
+        if s.m.ui.find_label("Cancel").is_some() {
+            s.tap("Cancel");
+        }
+        s.tap("⌂");
     }
     // --- fun apps ---
     // Highlights: long-press a word in the reader, then "Highlight sentence"

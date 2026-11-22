@@ -41,6 +41,50 @@ pub fn http_get(url: &str) -> Result<String, String> {
     }
 }
 
+/// GET with optional HTTP basic auth (OPDS servers such as Calibre).
+pub fn http_get_auth(url: &str, auth: Option<(&str, &str)>) -> Result<String, String> {
+    let mut args = vec!["-sSfL".to_string(), "--compressed".into(), "-m".into(), "40".into(), "-A".into(), UA.into()];
+    if let Some((u, p)) = auth.filter(|(u, _)| !u.is_empty()) {
+        args.push("--anyauth".into());
+        args.push("-u".into());
+        args.push(format!("{u}:{p}"));
+    }
+    args.push(url.into());
+    let out = Command::new("curl").args(&args).stdin(Stdio::null()).output()
+        .map_err(|e| format!("curl not available: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let e = String::from_utf8_lossy(&out.stderr);
+        Err(if e.contains("401") { "Wrong username or password for this catalog.".into() } else { friendly_curl_error(&e) })
+    }
+}
+
+/// Download any ebook (EPUB/CBZ zip, MOBI/AZW3, PDF), with optional basic auth. Checks the content.
+pub fn download_book(url: &str, dest: &str, auth: Option<(&str, &str)>) -> Result<(), String> {
+    let tmp = format!("{dest}.part");
+    let mut args = vec!["-sSfL".to_string(), "-m".into(), "600".into(), "-A".into(), UA.into(), "-o".into(), tmp.clone()];
+    if let Some((u, p)) = auth.filter(|(u, _)| !u.is_empty()) {
+        args.push("--anyauth".into());
+        args.push("-u".into());
+        args.push(format!("{u}:{p}"));
+    }
+    args.push(url.into());
+    let out = Command::new("curl").args(&args).stdin(Stdio::null()).output()
+        .map_err(|e| format!("curl not available: {e}"))?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(friendly_curl_error(&String::from_utf8_lossy(&out.stderr)));
+    }
+    let head = std::fs::read(&tmp).unwrap_or_default();
+    let ok = head.starts_with(b"PK") || head.starts_with(b"%PDF") || head.get(60..68) == Some(b"BOOKMOBI");
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("The server didn't return an ebook file.".into());
+    }
+    std::fs::rename(&tmp, dest).map_err(|e| e.to_string())
+}
+
 fn friendly_curl_error(e: &str) -> String {
     let e = e.trim();
     if e.contains("Could not resolve host") {
@@ -79,7 +123,7 @@ fn download(urls: &[String], dest: &str) -> Result<(), String> {
     Err(last)
 }
 
-fn urlencode(s: &str) -> String {
+pub fn urlencode(s: &str) -> String {
     s.bytes().map(|b| match b {
         b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
         b' ' => "+".into(),
@@ -188,6 +232,11 @@ fn standard_ebooks(query: Option<&str>) -> Result<Vec<Item>, String> {
     Ok(items)
 }
 
+pub fn safe_filename_ext(title: &str, author: &str, ext: &str) -> String {
+    let f = safe_filename(title, author);
+    format!("{}.{ext}", f.trim_end_matches(".epub"))
+}
+
 fn safe_filename(title: &str, author: &str) -> String {
     let base = if author.is_empty() { title.to_string() } else { format!("{title} - {author}") };
     let clean: String = base.chars().map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { '-' } else { c }).collect();
@@ -219,6 +268,7 @@ const T_SEARCH: u32 = 1;
 const T_DOWNLOAD: u32 = 2;
 const T_LINK: u32 = 3;
 const T_READ: u32 = 4;
+const T_MORE: u32 = 5;
 
 impl GetBooks {
     pub fn new() -> GetBooks {
@@ -269,7 +319,7 @@ impl App for GetBooks {
         cx.button(Rect::new(a.x0 + 10, a.y0 + 10, a.x0 + 200, a.y0 + 58), "Gutenberg", Some(Hit::App(ID_GUT)), Btn { inverted: gut, ..b });
         cx.button(Rect::new(a.x0 + 206, a.y0 + 10, a.x0 + 396, a.y0 + 58), "Standard Ebooks", Some(Hit::App(ID_SE)), Btn { inverted: !gut, ..b });
         cx.button(Rect::new(a.x0 + 402, a.y0 + 10, a.x0 + 496, a.y0 + 58), "Search", Some(Hit::App(ID_SEARCH)), b);
-        cx.button(Rect::new(a.x0 + 502, a.y0 + 10, a.x1 - 10, a.y0 + 58), "Link", Some(Hit::App(ID_LINK)), b);
+        cx.button(Rect::new(a.x0 + 502, a.y0 + 10, a.x1 - 10, a.y0 + 58), "More…", Some(Hit::App(ID_LINK)), b);
         let heading = match (&self.query, self.source) {
             (Some(q), _) => format!("Results for “{q}”"),
             (None, Source::Gutenberg) => "Most popular on Project Gutenberg".into(),
@@ -337,8 +387,8 @@ impl App for GetBooks {
             }
             ID_SEARCH => Cmd::Dialog(Dialog::input(T_SEARCH, "Search books", self.query.as_deref().unwrap_or(""), "Search")
                 .with_message("Title or author")),
-            ID_LINK => Cmd::Dialog(Dialog::input(T_LINK, "Download from link", "https://", "Download")
-                .with_message("Direct link to an .epub file")),
+            ID_LINK => Cmd::Dialog(Dialog::menu(T_MORE, "More sources",
+                vec!["My catalogs (OPDS, Calibre…)".into(), "Download from link".into()])),
             i => {
                 let Some(it) = self.items.get(i as usize) else { return Cmd::None };
                 self.sel = i as usize;
@@ -380,6 +430,11 @@ impl App for GetBooks {
                 self.spawn("Downloading…", move || Job::Downloaded(download(&[url], &dest).map(|_| dest)));
                 Cmd::Redraw
             }
+            T_MORE => match choice {
+                0 => Cmd::Push(Box::new(crate::opds::Catalogs::new())),
+                _ => Cmd::Dialog(Dialog::input(T_LINK, "Download from link", "https://", "Download")
+                    .with_message("Direct link to an .epub file")),
+            },
             T_READ => match self.last_path.clone() {
                 Some(p) => open_book(sys, &p),
                 None => Cmd::None,
