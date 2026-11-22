@@ -63,7 +63,8 @@ pub fn http_get_auth(url: &str, auth: Option<(&str, &str)>) -> Result<String, St
 /// Download any ebook (EPUB/CBZ zip, MOBI/AZW3, PDF), with optional basic auth. Checks the content.
 pub fn download_book(url: &str, dest: &str, auth: Option<(&str, &str)>) -> Result<(), String> {
     let tmp = format!("{dest}.part");
-    let mut args = vec!["-sSfL".to_string(), "-m".into(), "600".into(), "-A".into(), UA.into(), "-o".into(), tmp.clone()];
+    let mut args = vec!["-sSfL".to_string(), "-m".into(), "600".into(), "--connect-timeout".into(), "20".into(),
+                        "-y".into(), "45".into(), "-Y".into(), "500".into(), "-A".into(), UA.into(), "-o".into(), tmp.clone()];
     if let Some((u, p)) = auth.filter(|(u, _)| !u.is_empty()) {
         args.push("--anyauth".into());
         args.push("-u".into());
@@ -74,7 +75,9 @@ pub fn download_book(url: &str, dest: &str, auth: Option<(&str, &str)>) -> Resul
         .map_err(|e| format!("curl not available: {e}"))?;
     if !out.status.success() {
         let _ = std::fs::remove_file(&tmp);
-        return Err(friendly_curl_error(&String::from_utf8_lossy(&out.stderr)));
+        let e = friendly_curl_error(&String::from_utf8_lossy(&out.stderr));
+        crate::sys::log(&format!("download {url} failed: {e}"));
+        return Err(e);
     }
     let head = std::fs::read(&tmp).unwrap_or_default();
     let ok = head.starts_with(b"PK") || head.starts_with(b"%PDF") || head.get(60..68) == Some(b"BOOKMOBI");
@@ -89,6 +92,10 @@ fn friendly_curl_error(e: &str) -> String {
     let e = e.trim();
     if e.contains("Could not resolve host") {
         "No internet connection (couldn't look up the server). Check Wi-Fi.".into()
+    } else if e.contains("error: 503") || e.contains("error: 502") {
+        "The book site is temporarily down. Try again later.".into()
+    } else if e.contains("too slow") {
+        "The download stalled (weak Wi-Fi?).".into()
     } else if e.contains("timed out") {
         "The server took too long to answer.".into()
     } else if e.contains("certificate") || e.contains("SSL") {
@@ -105,19 +112,23 @@ fn download(urls: &[String], dest: &str) -> Result<(), String> {
     let tmp = format!("{dest}.part");
     let mut last = String::from("no download link");
     for url in urls {
+        // No --retry: a server under maintenance answers 503 with "Retry-After: 21600", and curl would
+        // sleep that long. Instead we fall through to the next mirror; stalled transfers are cut off too.
         let out = Command::new("curl")
-            .args(["-sSfL", "-m", "600", "--retry", "1", "-A", UA, "-o", &tmp, url])
+            .args(["-sSfL", "-m", "600", "--connect-timeout", "20", "-y", "45", "-Y", "500", "-A", UA, "-o", &tmp, url])
             .stdin(Stdio::null()).output()
             .map_err(|e| format!("curl not available: {e}"))?;
         if out.status.success() {
             let head = std::fs::read(&tmp).map(|b| b.get(..2).map(|h| h.to_vec())).unwrap_or(None);
             if head.as_deref() == Some(b"PK") {
+                crate::sys::log(&format!("getbooks: downloaded {url}"));
                 return std::fs::rename(&tmp, dest).map_err(|e| e.to_string());
             }
             last = "the server didn't return an EPUB file".into();
         } else {
             last = friendly_curl_error(&String::from_utf8_lossy(&out.stderr));
         }
+        crate::sys::log(&format!("getbooks: {url} failed: {last}"));
         let _ = std::fs::remove_file(&tmp);
     }
     Err(last)
