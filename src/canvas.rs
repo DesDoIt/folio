@@ -63,6 +63,26 @@ pub enum Anchor {
     MT,
 }
 
+/// One glyph of a laid-out string: `x` from the start of the string, `y` raised above the baseline.
+#[derive(Clone, Copy)]
+struct Placed {
+    key: GlyphKey,
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Copy)]
+enum GlyphKey {
+    Char(char),
+    Shaped(usize, u16),
+}
+
+/// Scripts whose letters change shape and order (Devanagari, Bengali, Tamil, ...): they need
+/// shaping, not one glyph per character. ZWJ/ZWNJ steer conjuncts.
+fn needs_shaping(c: char) -> bool {
+    matches!(c as u32, 0x0900..=0x0DFF | 0xA8E0..=0xA8FF | 0x200C | 0x200D)
+}
+
 struct Glyph {
     w: usize,
     h: usize,
@@ -78,6 +98,10 @@ pub struct Fonts {
     mono: fontdue::Font,
     italic: fontdue::Font,
     cache: HashMap<(Face, char, u16), Glyph>,
+    /// Glyphs of shaped (Indic) text, by (fallback font, glyph id, size).
+    shaped_glyphs: HashMap<(usize, u16, u16), Glyph>,
+    /// Shaped runs, so measuring and then drawing the same word shapes it once.
+    shaped_runs: HashMap<(String, u16), Vec<Placed>>,
     /// Extra scripts (CJK, Devanagari, Arabic, Hebrew, Thai...), loaded on first use from disk.
     /// These use ab_glyph, which reads glyphs on demand: fontdue would turn every glyph of the
     /// 50k-glyph CJK font into outlines up front (~120 MB of RAM), enough to freeze the Kindle.
@@ -105,10 +129,13 @@ static ITALIC: &[u8] = include_bytes!("../fonts/DejaVuSans-Oblique.ttf");
 /// Draw one glyph from a fallback font, in the same layout fontdue uses: `size` is pixels per em,
 /// `ymin` is the bitmap's bottom edge above the baseline.
 fn rasterize_fallback(font: &ab_glyph::FontVec, c: char, size: f32) -> Glyph {
+    rasterize_id(font, ab_glyph::Font::glyph_id(font, c), size)
+}
+
+fn rasterize_id(font: &ab_glyph::FontVec, id: ab_glyph::GlyphId, size: f32) -> Glyph {
     use ab_glyph::{Font, ScaleFont};
     let upem = font.units_per_em().unwrap_or(1000.0);
     let scale = ab_glyph::PxScale::from(size * font.height_unscaled() / upem);
-    let id = font.glyph_id(c);
     let advance = font.as_scaled(scale).h_advance(id);
     let Some(outline) = font.outline_glyph(id.with_scale(scale)) else {
         return Glyph { w: 0, h: 0, xmin: 0, ymin: 0, advance, bitmap: Vec::new() };
@@ -125,6 +152,10 @@ fn rasterize_fallback(font: &ab_glyph::FontVec, c: char, size: f32) -> Glyph {
     Glyph { w, h, xmin: b.min.x as i32, ymin: -(b.max.y as i32), advance, bitmap }
 }
 
+fn run_advance(run: &[Placed]) -> f32 {
+    run.last().map(|p| p.x).unwrap_or(0.0)
+}
+
 impl Fonts {
     pub fn load() -> Fonts {
         let s = fontdue::FontSettings::default();
@@ -135,6 +166,8 @@ impl Fonts {
             italic: fontdue::Font::from_bytes(ITALIC, s).expect("italic font"),
             cache: HashMap::new(),
             fallbacks: None,
+            shaped_glyphs: HashMap::new(),
+            shaped_runs: HashMap::new(),
         }
     }
 
@@ -194,7 +227,91 @@ impl Fonts {
         }
     }
 
+    /// Position every glyph of `s`; returns the glyphs and the total advance. Indic runs are shaped
+    /// with rustybuzz using the fallback font that covers them; everything else is one glyph per char.
+    fn layout(&mut self, s: &str, f: Face, size: u16) -> (Vec<Placed>, f32) {
+        let mut out = Vec::with_capacity(s.len());
+        let mut pen = 0.0;
+        let chars: Vec<(usize, char)> = s.char_indices().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let (start, c) = chars[i];
+            if needs_shaping(c) && !matches!(c, '\u{200C}' | '\u{200D}') {
+                let mut j = i;
+                while j < chars.len() && needs_shaping(chars[j].1) {
+                    j += 1;
+                }
+                let end = chars.get(j).map(|x| x.0).unwrap_or(s.len());
+                if let Some(run) = self.shape(&s[start..end], size) {
+                    for p in &run {
+                        out.push(Placed { key: p.key, x: pen + p.x, y: p.y });
+                    }
+                    // the run's advance is its trailing marker (see `shape`)
+                    pen += run_advance(&run);
+                    i = j;
+                    continue;
+                }
+            }
+            out.push(Placed { key: GlyphKey::Char(c), x: pen, y: 0.0 });
+            pen += self.glyph(f, c, size).advance;
+            i += 1;
+        }
+        out.retain(|p| !matches!(p.key, GlyphKey::Shaped(usize::MAX, _)));
+        (out, pen)
+    }
+
+    /// Shape one Indic run; None when no installed font covers it.
+    fn shape(&mut self, run: &str, size: u16) -> Option<Vec<Placed>> {
+        if let Some(r) = self.shaped_runs.get(&(run.to_string(), size)) {
+            return Some(r.clone());
+        }
+        self.load_fallbacks();
+        let first = run.chars().find(|c| !matches!(c, '\u{200C}' | '\u{200D}'))?;
+        let fonts = self.fallbacks.as_ref()?;
+        let idx = fonts.iter().position(|x| ab_glyph::Font::glyph_id(x, first).0 != 0)?;
+        let face = rustybuzz::Face::from_slice(fonts[idx].as_slice(), 0)?;
+        let mut buf = rustybuzz::UnicodeBuffer::new();
+        buf.push_str(run);
+        buf.guess_segment_properties();
+        let shaped = rustybuzz::shape(&face, &[], buf);
+        let scale = size as f32 / face.units_per_em() as f32;
+        let mut placed = Vec::new();
+        let mut pen = 0.0;
+        for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+            placed.push(Placed {
+                key: GlyphKey::Shaped(idx, info.glyph_id as u16),
+                x: pen + pos.x_offset as f32 * scale,
+                y: pos.y_offset as f32 * scale,
+            });
+            pen += pos.x_advance as f32 * scale;
+        }
+        // trailing marker carrying the run's total advance; dropped by `layout`
+        placed.push(Placed { key: GlyphKey::Shaped(usize::MAX, 0), x: pen, y: 0.0 });
+        if self.shaped_runs.len() > 2000 {
+            self.shaped_runs.clear();
+        }
+        self.shaped_runs.insert((run.to_string(), size), placed.clone());
+        Some(placed)
+    }
+
+    fn shaped_glyph(&mut self, idx: usize, id: u16, size: u16) -> &Glyph {
+        if !self.shaped_glyphs.contains_key(&(idx, id, size)) {
+            let g = match self.fallbacks.as_ref().and_then(|v| v.get(idx)) {
+                Some(font) => rasterize_id(font, ab_glyph::GlyphId(id), size as f32),
+                None => Glyph { w: 0, h: 0, xmin: 0, ymin: 0, advance: 0.0, bitmap: Vec::new() },
+            };
+            if self.shaped_glyphs.len() > 2000 {
+                self.shaped_glyphs.clear();
+            }
+            self.shaped_glyphs.insert((idx, id, size), g);
+        }
+        &self.shaped_glyphs[&(idx, id, size)]
+    }
+
     pub fn width(&mut self, s: &str, f: Face, size: u16) -> i32 {
+        if s.chars().any(needs_shaping) {
+            return self.layout(s, f, size).1.ceil() as i32;
+        }
         let mut w = 0.0;
         for c in s.chars() {
             w += self.glyph(f, c, size).advance;
@@ -362,11 +479,30 @@ impl Canvas {
             Anchor::LT | Anchor::RT | Anchor::MT => y as f32 + asc,
             Anchor::LM | Anchor::MM | Anchor::RM => y as f32 + (asc + desc) / 2.0,
         };
+        let placed = if s.chars().any(needs_shaping) {
+            fonts.layout(s, face, size).0
+        } else {
+            Vec::new()
+        };
+        let mut chars = s.chars();
+        let mut k = 0;
         let mut pen = left;
-        for c in s.chars() {
-            let g = fonts.glyph(face, c, size);
-            let gx = (pen + g.xmin as f32).round() as i32;
-            let gy = (baseline - g.ymin as f32 - g.h as f32).round() as i32;
+        loop {
+            // plain text walks the chars; shaped text walks the laid-out glyphs
+            let (g, x, raise) = if placed.is_empty() {
+                let Some(c) = chars.next() else { break };
+                (fonts.glyph(face, c, size), pen, 0.0)
+            } else {
+                let Some(p) = placed.get(k) else { break };
+                k += 1;
+                let g = match p.key {
+                    GlyphKey::Char(c) => fonts.glyph(face, c, size),
+                    GlyphKey::Shaped(idx, id) => fonts.shaped_glyph(idx, id, size),
+                };
+                (g, left + p.x, p.y)
+            };
+            let gx = (x + g.xmin as f32).round() as i32;
+            let gy = (baseline - raise - g.ymin as f32 - g.h as f32).round() as i32;
             let (gw, gh) = (g.w, g.h);
             // copy out to avoid holding a borrow on fonts while drawing
             let bitmap = &g.bitmap;
@@ -462,5 +598,27 @@ mod tests {
         }
         let grown = rss_kb().saturating_sub(before);
         assert!(grown < 20_000, "fallback fonts took {grown} kB");
+    }
+
+    #[test]
+    fn hindi_is_shaped() {
+        if !std::path::Path::new(FALLBACK_FONTS[2]).exists() {
+            return; // no Devanagari font in this environment
+        }
+        let mut f = Fonts::load();
+        // क्ष is one conjunct glyph, not three
+        let (glyphs, w) = f.layout("क्ष", Face::Sans, 32);
+        assert!(glyphs.len() < 3 && w > 10.0, "{} glyphs", glyphs.len());
+        // कि: the vowel sign is drawn first (left of the consonant)
+        let (glyphs, _) = f.layout("कि", Face::Sans, 32);
+        let ka = f.layout("क", Face::Sans, 32).0[0].key;
+        assert!(matches!((glyphs[0].key, ka), (GlyphKey::Shaped(_, a), GlyphKey::Shaped(_, b)) if a != b));
+        // measuring a page of words stays quick (shaped runs are cached)
+        let t = std::time::Instant::now();
+        let words: Vec<String> = (0..300).map(|i| format!("किताब{} प्रेम{}", i % 40, i % 7)).collect();
+        for w in &words {
+            f.width(w, Face::Sans, 24);
+        }
+        eprintln!("300 words shaped in {:?}", t.elapsed());
     }
 }

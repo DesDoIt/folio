@@ -79,8 +79,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 - **First-start setup**: a short guide for time zone, Wi-Fi, sleep screen and weather (run it again from Settings)
 - **Settings** (with an optional larger menu text size), **System** info, **Power** (sleep, exit to stock Kindle, reboot, power off)
 - **Boot menu**: optionally boot straight into Kindle Linux, with automatic fallback to the stock Kindle
-- Text in other scripts (Chinese, Japanese, Korean, Hebrew…) via fallback fonts; Devanagari and Arabic show
-  their letters but not their joined forms (no shaping engine yet)
+- Text in other scripts (Chinese, Japanese, Hebrew…) via fallback fonts; Hindi and other Devanagari text is
+  shaped properly (conjuncts, vowel signs) with rustybuzz; Arabic shows its letters but not their joined forms
 
 ## How it works
 

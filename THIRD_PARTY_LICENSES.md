@@ -7,10 +7,13 @@ It builds on the following third-party work. All of it is compatible with GPL-3.
 
 | Crate | Version | License |
 |---|---|---|
+| ab_glyph | 0.2.32 | Apache-2.0 |
+| ab_glyph_rasterizer | 0.1.10 | Apache-2.0 |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
 | allocator-api2 | 0.2.21 | MIT OR Apache-2.0 |
 | arrayvec | 0.7.8 | MIT OR Apache-2.0 |
 | bitflags | 1.3.2 | MIT OR Apache-2.0 |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | core_maths | 0.1.1 | MIT |
 | crc32fast | 1.5.5 | MIT OR Apache-2.0 |
@@ -22,10 +25,18 @@ It builds on the following third-party work. All of it is compatible with GPL-3.
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | libm | 0.2.16 | MIT |
+| log | 0.4.35 | MIT OR Apache-2.0 |
 | miniz_oxide | 0.8.9 / 0.9.1 | MIT OR Zlib OR Apache-2.0 |
+| owned_ttf_parser | 0.25.1 | Apache-2.0 |
 | png | 0.17.16 | MIT OR Apache-2.0 |
+| rustybuzz | 0.20.1 | MIT |
 | simd-adler32 | 0.3.10 | MIT |
+| smallvec | 1.16.6 | MIT OR Apache-2.0 |
 | ttf-parser | 0.25.1 | MIT OR Apache-2.0 |
+| unicode-bidi-mirroring | 0.4.0 | MIT OR Apache-2.0 |
+| unicode-ccc | 0.4.0 | MIT OR Apache-2.0 |
+| unicode-properties | 0.1.5 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unicode-script | 0.5.9 | MIT OR Apache-2.0 |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
 | vte | 0.13.1 | Apache-2.0 OR MIT |
 | zlib-rs | 0.6.8 | Zlib |
