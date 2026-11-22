@@ -200,12 +200,9 @@ of their DRM).
   Kindle starts you get a 5-second menu that starts Kindle Linux by default, or the stock Kindle if
   you choose it. **Kindle Linux: boot OFF** removes it. If Kindle Linux ever fails to start, the
   next boot goes to the stock Kindle automatically.
-- **KOReader** for PDFs, comics and other formats: install it with its
-  [Kindle instructions](https://github.com/koreader/koreader/wiki/Installation-on-Kindle-devices).
-  Kindle Linux finds it in the `koreader` folder and opens those files in it. To keep KOReader out
-  of the stock Kindle's library, delete `documents/KOReader.sh`.
-- **Adding books.** Copy EPUB, MOBI/AZW3 (without DRM) or TXT files into the `documents` folder over
-  USB, use **Send to Kindle** (upload from your phone or computer over Wi-Fi), or download them with
+- **Adding books.** Copy books into the `documents` folder over USB: EPUB, MOBI/AZW3 (without DRM),
+  FB2, RTF, DOCX, TXT, PDF, DjVu, or comics (CBZ/CBR). Kindle Linux reads all of them itself; you
+  don't need KOReader. Or use **Send to Kindle** (upload from your phone or computer over Wi-Fi), or download them with
   **Get Books**.
 - **SSH.** Settings → set a root password → turn on SSH, then `ssh root@<kindle-ip>`.
 

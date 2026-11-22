@@ -9,8 +9,11 @@ pub struct Gray {
     pub px: Vec<u8>,
 }
 
-/// Decode PNG or JPEG bytes into grayscale.
+/// Decode PNG, JPEG or binary PGM (what mutool/ddjvu write) into grayscale.
 pub fn decode(bytes: &[u8]) -> Result<Gray, String> {
+    if bytes.starts_with(b"P5") {
+        return decode_pgm(bytes);
+    }
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         decode_png(bytes)
     } else if bytes.starts_with(&[0xFF, 0xD8]) {
@@ -119,4 +122,55 @@ mod tests {
         let f = fill(&Gray { w: 4, h: 2, px: vec![0; 8] }, 2, 2);
         assert_eq!((f.w, f.h), (2, 2));
     }
+}
+
+/// Binary PGM ("P5 <w> <h> <max>\n<bytes>"), with optional # comments in the header.
+fn decode_pgm(b: &[u8]) -> Result<Gray, String> {
+    let mut fields = vec![];
+    let mut i = 2;
+    while fields.len() < 3 && i < b.len() {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i < b.len() && b[i] == b'#' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        let s = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        fields.push(std::str::from_utf8(&b[s..i]).ok().and_then(|t| t.parse::<i32>().ok()).ok_or("PGM: bad header")?);
+    }
+    i += 1; // the single whitespace after maxval
+    let (w, h) = (fields[0], fields[1]);
+    let n = (w * h) as usize;
+    if w <= 0 || h <= 0 || b.len() < i + n {
+        return Err("PGM: truncated".into());
+    }
+    Ok(Gray { w, h, px: b[i..i + n].to_vec() })
+}
+
+/// Crop white margins (keeps a small border). Anything not near-white counts as content.
+pub fn trim(src: &Gray) -> Gray {
+    let dark = |x: i32, y: i32| src.px[(y * src.w + x) as usize] < 235;
+    let row_has = |y: i32| (0..src.w).step_by(2).any(|x| dark(x, y));
+    let col_has = |x: i32, y0: i32, y1: i32| (y0..y1).step_by(2).any(|y| dark(x, y));
+    let Some(y0) = (0..src.h).find(|&y| row_has(y)) else { return Gray { w: src.w, h: src.h, px: src.px.clone() } };
+    let y1 = (0..src.h).rev().find(|&y| row_has(y)).unwrap_or(src.h - 1) + 1;
+    let x0 = (0..src.w).find(|&x| col_has(x, y0, y1)).unwrap_or(0);
+    let x1 = (0..src.w).rev().find(|&x| col_has(x, y0, y1)).unwrap_or(src.w - 1) + 1;
+    let pad = (src.w / 60).max(4);
+    let (x0, y0, x1, y1) = ((x0 - pad).max(0), (y0 - pad).max(0), (x1 + pad).min(src.w), (y1 + pad).min(src.h));
+    if x1 - x0 < src.w / 4 || y1 - y0 < src.h / 4 {
+        return Gray { w: src.w, h: src.h, px: src.px.clone() }; // nearly blank page: don't zoom into a speck
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    let mut px = Vec::with_capacity((w * h) as usize);
+    for y in y0..y1 {
+        px.extend_from_slice(&src.px[(y * src.w + x0) as usize..(y * src.w + x1) as usize]);
+    }
+    Gray { w, h, px }
 }

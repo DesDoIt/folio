@@ -49,6 +49,9 @@ fn write_pgm(path: &str, g: Option<&Gray>) {
 /// Extract and shrink a book's cover (slow: runs in the loader thread).
 fn extract(path: &str) -> Option<Gray> {
     let lower = path.to_ascii_lowercase();
+    if crate::pages::PAGE_EXT.iter().any(|e| lower.ends_with(&format!(".{e}"))) {
+        return crate::pages::cover(path, COVER_W, COVER_H); // first page
+    }
     let bytes = if lower.ends_with(".epub") {
         crate::epub::Book::open(path).ok().and_then(|mut b| b.cover_image())
     } else if lower.ends_with(".mobi") || lower.ends_with(".azw3") || lower.ends_with(".azw") {

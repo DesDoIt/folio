@@ -2,8 +2,9 @@
 
 A small, self-contained Linux environment for old jailbroken e-ink Kindles: a slim
 **Alpine Linux** system with a touch GUI written in **Rust**, drawn straight to the e-ink
-framebuffer (no X11). It turns a Kindle into an independent little Linux device that can
-still read books via KOReader.
+framebuffer (no X11). It turns a Kindle into an independent little Linux device that is still,
+first of all, a good e-reader: EPUB, MOBI/AZW3, FB2, RTF, DOCX, TXT, PDF, DjVu and comics all open in
+its own readers.
 
 Developed on a **Kindle Basic 7th gen (2014, "KT2", Wario platform, firmware 5.12.2.2)**:
 i.MX6 SoloLite, 256 MB RAM, 600×800 8-bit e-ink, zForce2 touchscreen, ath6kl Wi-Fi.
@@ -19,6 +20,7 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 |:-:|:-:|:-:|
 | <img src="docs/screenshots/home.png" width="240" alt="Home screen"><br>Home | <img src="docs/screenshots/reader.png" width="240" alt="Built-in reader"><br>Reader | <img src="docs/screenshots/reader-toolbar.png" width="240" alt="Reader toolbar"><br>Reader toolbar |
 | <img src="docs/screenshots/get-books.png" width="240" alt="Get Books"><br>Get Books | <img src="docs/screenshots/books.png" width="240" alt="Library"><br>Library | <img src="docs/screenshots/books-list.png" width="240" alt="Library as a list"><br>Library (list) |
+| <img src="docs/screenshots/pdf.png" width="240" alt="PDF, whole page"><br>PDF | <img src="docs/screenshots/pdf-fit-width.png" width="240" alt="PDF, fit width"><br>PDF: fit width | <img src="docs/screenshots/comic.png" width="240" alt="Comic"><br>Comics (CBZ/CBR) |
 | <img src="docs/screenshots/get-books-progress.png" width="240" alt="Download progress"><br>Downloading | <img src="docs/screenshots/news-headlines.png" width="240" alt="News headlines"><br>News headlines | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
 | <img src="docs/screenshots/news.png" width="240" alt="News feed"><br>News | <img src="docs/screenshots/news-article.png" width="240" alt="News article"><br>Article | <img src="docs/screenshots/wikipedia.png" width="240" alt="Wikipedia article"><br>Wikipedia |
 | <img src="docs/screenshots/web-start.png" width="240" alt="Web browser"><br>Web | <img src="docs/screenshots/web-results.png" width="240" alt="Search results"><br>Search results | <img src="docs/screenshots/sleep-book.png" width="240" alt="Sleep screen: current book"><br>Sleep: current book |
@@ -31,17 +33,20 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 ## Features
 
 **Reading**
-- **Reader**: built-in, for EPUB, DRM-free MOBI/AZW3, TXT and saved web pages: full-screen pages, tap or
+- **Reader**: built-in, for EPUB, DRM-free MOBI/AZW3 (including HUFF/CDIC-compressed files), FB2/FB2.ZIP,
+  RTF, Word DOCX, TXT and saved web pages: full-screen pages, tap or
   swipe to turn, tap the top of the page for a toolbar (back, home, chapters, bookmark, search, text size), chapters, bookmarks, search, footnote pop-ups, images, italics, hyphenation, font size,
   margins and line spacing; position saved per book. Long-press a word to **define** it (English, online)
   or **highlight** its sentence
 - **Books**: your library as a cover shelf (real covers from EPUB/MOBI/AZW3, reading progress under each) or a
-  compact list; tap opens the built-in reader (EPUB, TXT, saved pages) or, for other formats
-  (PDF, MOBI/AZW3, comics), KOReader; hold any book to open it in KOReader
+  compact list (with ⋯ to read or delete)
+- **PDF, DjVu and comics (CBZ/CBR)**: a page reader with white margins trimmed automatically, a
+  "fit width" mode that shows small print at full width in screen-sized parts, contents (PDF bookmarks),
+  go to page, and the first page as the cover in your library (rendered with MuPDF and DjVuLibre)
 - **Get Books**: search/browse Project Gutenberg and Standard Ebooks, your own **OPDS catalogs** (Calibre's
   content server, other home library servers; optional login), or download any EPUB link; each download shows a
   progress bar on its book, and several can run at once
-- **Progress sync** with a KOReader sync server (KOReader's public one or your own): continue a book on your
+- **Progress sync** with a KOReader-compatible sync server (KOReader's public one or your own): continue a book on your
   phone or another reader, per chapter
 - **Send to Kindle**: open `http://<kindle-ip>:8080` on a phone or computer and upload books over Wi-Fi
 - **Highlights**: everything you highlighted, plus import of the Kindle's `My Clippings.txt`
@@ -94,7 +99,6 @@ and restarts the stock Kindle services.
 |---|---|
 | 0 | exit to stock Kindle |
 | 3 | restart GUI |
-| 10 | open KOReader (path in `/mnt/us/kos/request`) |
 | 20 / 21 | reboot / power off |
 
 ## Repository layout
@@ -137,7 +141,6 @@ In short:
 3. Connect the Kindle over USB and run `build/install.sh`. Eject it.
 4. Tap **Kindle Linux** in the library. Optional: **Kindle Linux: boot ON** adds a boot menu at power-on.
 
-KOReader is optional; Kindle Linux uses it for PDFs and comics if it's installed.
 
 ### Escape hatches
 

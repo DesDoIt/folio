@@ -10,6 +10,7 @@ PKGS="
 alpine-baselayout alpine-keys alpine-release apk-tools busybox busybox-suid musl musl-utils ca-certificates ca-certificates-bundle tzdata
 curl ncurses-terminfo-base font-droid-nonlatin
 wpa_supplicant iw
+mupdf-tools djvulibre libarchive-tools
 dropbear dropbear-scp openssh-sftp-server
 nano htop less
 "

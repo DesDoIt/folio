@@ -2,7 +2,6 @@
 //! top-middle tap for a menu. Positions are saved per book as (chapter, character offset),
 //! so they survive font-size changes.
 
-use crate::apps::open_koreader;
 use crate::canvas::*;
 use crate::epub::{Block, BlockKind, Book};
 use crate::input::{Gesture, Kind};
@@ -306,7 +305,7 @@ fn positions_path(sys: &Sys) -> String {
     format!("{}/kos/reading.txt", sys.us)
 }
 
-fn load_positions(sys: &Sys) -> HashMap<String, (usize, usize)> {
+pub(crate) fn load_positions(sys: &Sys) -> HashMap<String, (usize, usize)> {
     let mut m = HashMap::new();
     for line in std::fs::read_to_string(positions_path(sys)).unwrap_or_default().lines() {
         let p: Vec<&str> = line.split('\t').collect();
@@ -319,7 +318,7 @@ fn load_positions(sys: &Sys) -> HashMap<String, (usize, usize)> {
     m
 }
 
-fn save_position(sys: &Sys, path: &str, chapter: usize, offset: usize) {
+pub(crate) fn save_position(sys: &Sys, path: &str, chapter: usize, offset: usize) {
     let mut m = load_positions(sys);
     m.insert(path.to_string(), (chapter, offset));
     let body: String = m.iter().map(|(k, (c, o))| format!("{k}\t{c}\t{o}\n")).collect();
@@ -369,7 +368,6 @@ enum MenuAct {
     FontSize,
     Layout,
     SaveForLater,
-    KOReader,
     Library,
 }
 
@@ -815,11 +813,9 @@ impl App for Reader {
                 self.toolbar = false;
                 self.menu = vec![MenuAct::Chapters, MenuAct::Bookmark, MenuAct::Bookmarks, MenuAct::Search,
                                  MenuAct::FontSize, MenuAct::Layout];
-                // in-memory articles can be saved; real book files can be opened in KOReader instead
+                // in-memory articles (news, web pages) can be saved as books
                 if self.save_html.is_some() {
                     self.menu.push(MenuAct::SaveForLater);
-                } else if std::path::Path::new(&self.path).is_file() {
-                    self.menu.push(MenuAct::KOReader);
                 }
                 self.menu.push(MenuAct::Library);
                 let marked = self.is_bookmarked(sys);
@@ -833,7 +829,6 @@ impl App for Reader {
                     MenuAct::FontSize => "Font size",
                     MenuAct::Layout => "Layout: margins, spacing",
                     MenuAct::SaveForLater => "Save for later",
-                    MenuAct::KOReader => "Open in KOReader",
                     MenuAct::Library => "Back to library",
                     _ => "",
                     }.to_string(),
@@ -908,10 +903,6 @@ impl App for Reader {
                         Ok(()) => Cmd::Toast("Saved to Books → Saved pages".into()),
                         Err(e) => Cmd::Toast(e.to_string()),
                     }
-                }
-                Some(MenuAct::KOReader) => {
-                    self.save(sys);
-                    open_koreader(sys, Some(&self.path.clone()))
                 }
                 Some(MenuAct::Layout) => self.layout_menu(),
                 Some(MenuAct::Library) => Cmd::Pop,
@@ -1064,7 +1055,7 @@ pub struct JumpList {
 }
 
 impl JumpList {
-    fn new(title: String, items: Vec<(String, String, usize, usize)>, mark: Option<usize>,
+    pub(crate) fn new(title: String, items: Vec<(String, String, usize, usize)>, mark: Option<usize>,
            pick: Arc<Mutex<Option<(usize, usize)>>>, empty: &'static str) -> JumpList {
         let mut pager = Pager::new(64);
         pager.page = mark.unwrap_or(0) / 10; // open near the marked entry (about 10 rows per page)

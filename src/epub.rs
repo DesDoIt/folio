@@ -84,6 +84,11 @@ impl Zip {
         }
     }
 
+    /// Names of all entries.
+    pub fn names(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
     pub fn read_string(&mut self, name: &str) -> Option<String> {
         self.read(name).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
@@ -966,6 +971,19 @@ impl Book {
         if [".mobi", ".azw3", ".azw", ".prc"].iter().any(|e| lower.ends_with(e)) {
             let m = crate::mobi::load(path)?;
             return Ok(Book::from_blocks(&m.title, &m.author, m.chapters));
+        }
+        let other = if lower.ends_with(".fb2") || lower.ends_with(".fb2.zip") {
+            Some(crate::formats::fb2(path))
+        } else if lower.ends_with(".rtf") {
+            Some(crate::formats::rtf(path))
+        } else if lower.ends_with(".docx") {
+            Some(crate::formats::docx(path))
+        } else {
+            None
+        };
+        if let Some(r) = other {
+            let l = r?;
+            return Ok(Book::from_blocks(&l.title, &l.author, l.chapters));
         }
         if lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml") {
             let html = String::from_utf8_lossy(&std::fs::read(path).map_err(|e| e.to_string())?).into_owned();

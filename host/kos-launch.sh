@@ -13,8 +13,7 @@ R=/var/tmp/kos-root
 LOG=$KOS/kos.log
 LOCK=/var/run/kos.lock
 STOPPED=""
-# Amazon reader/indexer/updater services. They don't stop with lab126_gui, and KOReader's
-# launcher restarts all of them when it exits (it assumes it returns to Amazon's UI).
+# Amazon reader/indexer/updater services. They don't stop with lab126_gui.
 # Left running they eat CPU and RAM (256 MB total), so we keep them stopped while we run.
 AMAZON_EXTRA="stored webreader kfxreader kfxview todo tmd rcm archive scanner otav3 otaupd"
 
@@ -128,25 +127,6 @@ kill_chroot_named() {
     done
 }
 
-# Log CPU/memory while KOReader runs, so slowdowns can be diagnosed from kos.log.
-perf_monitor() {
-    i=0
-    while [ $i -lt 8 ]; do
-        sleep 20
-        {
-            echo "$(date '+%Y-%m-%d %H:%M:%S') [perf] load: $(cat /proc/loadavg)"
-            echo "  cpufreq: $(cat $CPUFREQ/scaling_governor 2>/dev/null) $(cat $CPUFREQ/scaling_cur_freq 2>/dev/null)kHz (max $(cat $CPUFREQ/scaling_max_freq 2>/dev/null))"
-            grep -E '^(MemFree|Buffers|Cached):' /proc/meminfo | tr -s ' ' | sed 's/^/  /'
-            echo "  processes: $(ls -d /proc/[0-9]* | wc -l); biggest by RSS (kB):"
-            # busybox top has no batch mode on this firmware: read RSS straight from /proc
-            for st in /proc/[0-9]*/status; do
-                awk '/^Name:/{n=$2} /^VmRSS:/{r=$2} END{if (r) print r, n}' "$st" 2>/dev/null
-            done | sort -rn | head -15 | sed 's/^/    /'
-        } >> "$LOG" 2>&1
-        i=$((i + 1))
-    done
-}
-
 # One-shot memory snapshot: the 15 biggest processes by resident memory.
 mem_snapshot() {
     {
@@ -171,44 +151,6 @@ cpu_fast() {
 
 cpu_restore() {
     [ -n "$OLD_GOVERNOR" ] && echo "$OLD_GOVERNOR" > "$CPUFREQ/scaling_governor" 2>/dev/null
-}
-
-koreader_session() {
-    file="$1"
-    [ -n "$OLD_GOVERNOR" ] && echo performance > "$CPUFREQ/scaling_governor" 2>/dev/null
-    # KOReader talks to Amazon's wifi manager over lipc; with it stopped those calls stall the UI.
-    # Hand Wi-Fi back to Amazon while KOReader runs.
-    kill_chroot_named wpa_supplicant udhcpc
-    start wifis >/dev/null 2>&1
-    start wifid >/dev/null 2>&1
-    # Run KOReader in its "no framework" mode: it then skips its lipc calls to Amazon's (stopped)
-    # UI, which otherwise time out for ~10 s on start and exit. That mode ends with
-    # `start lab126_gui`; a PATH shim turns just that one call into a no-op.
-    SHIM=/var/tmp/kos-shim
-    REAL_START=$(command -v start)
-    mkdir -p "$SHIM"
-    printf '#!/bin/sh\n[ "$1" = lab126_gui ] && exit 0\nexec %s "$@"\n' "$REAL_START" > "$SHIM/start"
-    chmod +x "$SHIM/start"
-    log "launching KOReader ${file:+with $file} (no-framework mode)"
-    perf_monitor &
-    mon=$!
-    ( cd /mnt/us && export PATH="$SHIM:$PATH" && \
-      if [ -n "$file" ]; then sh koreader/koreader.sh --framework_stop "$file"; \
-      else sh koreader/koreader.sh --framework_stop; fi ) >> "$KOS/koreader.log" 2>&1
-    log "KOReader exited ($?)"
-    kill $mon 2>/dev/null
-    # KOReader just restarted Amazon's services; stop them again (restored on final exit)
-    for j in $AMAZON_EXTRA; do
-        if status "$j" 2>/dev/null | grep -q "start/"; then
-            stop "$j" >/dev/null 2>&1
-            case " $STOPPED " in *" $j "*) ;; *) STOPPED="$j $STOPPED" ;; esac
-        fi
-    done
-    stop wifid >/dev/null 2>&1
-    stop wifis >/dev/null 2>&1
-    killall wpa_supplicant udhcpc 2>/dev/null
-    log "back from KOReader; stopped Amazon services again"
-    [ -n "$OLD_GOVERNOR" ] && echo performance > "$CPUFREQ/scaling_governor" 2>/dev/null
 }
 
 kill_chroot_procs() {
@@ -299,7 +241,7 @@ stop_job wifid
 stop_job wifis
 stop_job volumd          # no USB drive mode while /mnt/us is in use
 for j in $AMAZON_EXTRA; do stop_job "$j"; done
-stop_job x               # Amazon's X server + awesome WM: neither we nor KOReader draw through X
+stop_job x               # Amazon's X server + awesome WM: we draw straight to the framebuffer
 killall wpa_supplicant udhcpc 2>/dev/null
 log "network interfaces: $(ls /sys/class/net | tr '\n' ' ')"
 cpu_fast
@@ -314,10 +256,6 @@ while :; do
     case "$code" in
         0) ACTION=exit; break ;;
         3) continue ;;
-        10)
-            koreader_session "$(sed -n 2p "$KOS/request" 2>/dev/null)"
-            crashes=0
-            continue ;;
         11) ACTION=browser; break ;;
         20) ACTION=reboot; break ;;
         21) ACTION=poweroff; break ;;

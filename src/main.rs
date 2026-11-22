@@ -1,7 +1,7 @@
 //! Kindle Linux GUI.
 //!
 //! Exit codes understood by the launcher (host/kos-launch.sh):
-//!   0 exit to stock Kindle   3 restart GUI   10 open KOReader (path in /mnt/us/kos/request)
+//!   0 exit to stock Kindle   3 restart GUI
 //!   11 open Amazon's browser (URL in /mnt/us/kos/request)   20 reboot   21 power off   1 crashed
 
 mod apps;
@@ -12,6 +12,7 @@ mod covers;
 mod dashboard;
 mod epub;
 mod fb;
+mod formats;
 mod games;
 mod getbooks;
 mod highlights;
@@ -22,6 +23,7 @@ mod json;
 mod mobi;
 mod news;
 mod opds;
+mod pages;
 mod reader;
 mod screensaver;
 mod settings;
@@ -448,7 +450,7 @@ impl Main {
             self.sys.ssh.stop();
             self.sys.wifi.stop();
         }
-        battery::set_governor(self.sys.sim, "performance"); // KOReader and the launcher expect full speed
+        battery::set_governor(self.sys.sim, "performance"); // the launcher and the stock Kindle expect full speed
         if let Some(mut w) = watcher {
             let _ = w.child.kill();
             let _ = w.child.wait();
@@ -633,9 +635,12 @@ fn make_userstore(us: &str) {
     let docs = format!("{us}/documents");
     let _ = std::fs::create_dir_all(&docs);
     for name in ["Three Men in a Boat_B004UJL1KK.kfx", "Pride and Prejudice.epub", "The Time Machine.epub",
-                 "Linux Pocket Guide.pdf", "Meditations - Marcus Aurelius.azw3", "Notes on e-ink.txt"] {
+                 "Meditations - Marcus Aurelius.azw3", "Notes on e-ink.txt"] {
         let _ = std::fs::write(format!("{docs}/{name}"), "sample ".repeat(200));
     }
+    let _ = std::fs::copy("tests/fixtures/sample.pdf", format!("{docs}/Harbour Stories.pdf"));
+    let _ = std::fs::copy("tests/fixtures/sample.cbz", format!("{docs}/Seaside Sketches.cbz"));
+    std::thread::sleep(Duration::from_millis(1100)); // newest file: first in "Recent" order
     let _ = std::fs::copy("tests/fixtures/sample.epub", format!("{docs}/A Sample Book.epub"));
     let _ = std::fs::remove_file(format!("{us}/kos/reading.txt"));
     let _ = std::fs::create_dir_all(format!("{us}/notes"));
@@ -794,7 +799,43 @@ fn sim_main(out: &str) -> i32 {
     s.shot("books-covers");
     s.tap("≡ List");
     s.shot("books-list");
+    // page reader: PDF (whole page, fit width, contents) and a comic
+    if s.m.ui.find_label("Harbour Stories").is_none() {
+        s.tap("Next ▶");
+    }
+    s.tap("Harbour Stories");
+    s.wait_idle(30);
+    s.shot("pdf-page");
+    s.tap("toolbar");
+    s.shot("pdf-toolbar");
+    s.tap("Fit width");
+    s.wait_idle(30);
+    s.shot("pdf-fit-width");
+    s.tap("next page");
+    s.wait_idle(30);
+    s.shot("pdf-fit-width-2");
+    s.tap("toolbar");
+    s.tap("Contents");
+    s.shot("pdf-contents");
+    s.tap("Chapter 3: The Bakery");
+    s.wait_idle(30);
+    s.shot("pdf-chapter3");
+    s.tap("toolbar");
+    s.tap("Whole page");
+    s.wait_idle(30);
+    s.tap("toolbar");
+    s.tap("‹");
+    if s.m.ui.find_label("Seaside Sketches").is_none() {
+        s.tap("Next ▶");
+    }
+    s.tap("Seaside Sketches");
+    s.wait_idle(30);
+    s.shot("comic-page");
+    s.tap("toolbar");
+    s.tap("‹");
     s.tap("▦ Covers");
+    s.wait_idle(30);
+    s.shot("books-covers-pdf");
     s.tap("⌂");
     // Web browser: start page, live search, follow a result, reading view
     s.tap("Web");

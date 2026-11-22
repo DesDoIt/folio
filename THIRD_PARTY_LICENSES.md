@@ -58,7 +58,10 @@ royalty provided the copyright notice and this notice are preserved (`data/hyph-
 ## Alpine Linux image
 
 `build/build.sh` downloads packages from the Alpine Linux v3.24 repositories (BusyBox, musl, curl,
-wpa_supplicant, iw, dropbear, nano, htop and their dependencies) to assemble `out/kos-rootfs.ext3`.
+wpa_supplicant, iw, dropbear, nano, htop, MuPDF tools, DjVuLibre, libarchive tools and their dependencies)
+to assemble `out/kos-rootfs.ext3`. The page reader runs three of these as separate programs:
+**MuPDF** `mutool` (AGPL-3.0-or-later) for PDF, **DjVuLibre** `ddjvu`/`djvused` (GPL-2.0-or-later) for
+DjVu, and **libarchive** `bsdtar` (BSD-2-Clause) for CBR comics.
 The image is **not** part of this repository. Those packages keep their own licenses (GPL-2.0, MIT, BSD
 and others; listed per package at https://pkgs.alpinelinux.org). If you distribute a built image, you
 must comply with those licenses, including offering the corresponding source for GPL packages, which
@@ -73,7 +76,7 @@ Kindle Linux fetches data from these services only when you use the related feat
 - **Project Gutenberg** (via the Gutendex API and gutenberg.org mirrors) and **Standard Ebooks**
   (CC0 1.0 for their production work): public-domain books.
 - **dictionaryapi.dev** (definitions), **DuckDuckGo**, **Marginalia** (search).
-- **KOReader sync server** (only if you sign in): a book fingerprint and your reading position.
+- **KOReader-compatible sync server** (only if you sign in): a book fingerprint and your reading position.
 - **OPDS catalogs** you add yourself (e.g. your Calibre server).
 
 ## Screenshots (`docs/screenshots/`)

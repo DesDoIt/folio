@@ -646,7 +646,7 @@ impl Sys {
         self.status.0 = None;
     }
 
-    /// Ask the host launcher to do something after we exit (e.g. open KOReader).
+    /// Ask the host launcher to do something after we exit (e.g. open the stock browser).
     pub fn request(&self, action: &str, arg: &str) {
         let path = format!("{}/kos/request", self.us);
         let _ = std::fs::create_dir_all(format!("{}/kos", self.us));

@@ -11,13 +11,21 @@ use crate::web::Web;
 use crate::ui::*;
 use std::path::{Path, PathBuf};
 
-const BOOK_EXT: &[&str] = &["epub", "pdf", "mobi", "azw", "azw3", "fb2", "djvu", "cbz", "cbr", "txt", "rtf", "html",
-                            "htm", "doc", "docx", "chm", "kfx", "prc"];
+const BOOK_EXT: &[&str] = &["epub", "pdf", "mobi", "azw", "azw3", "prc", "fb2", "djvu", "djv", "cbz", "cbr", "txt", "rtf",
+                            "html", "htm", "docx", "kfx"];
 const DRM_EXT: &[&str] = &["kfx"]; // Amazon store format; .azw/.azw3 are tried (DRM is detected when opening)
-/// Formats the built-in reader handles; everything else goes to KOReader.
-const READER_EXT: &[&str] = &["epub", "txt", "html", "htm", "mobi", "azw3", "azw", "prc"];
-const KOREADER_EXT: &[&str] = &["epub", "pdf", "mobi", "azw3", "fb2", "djvu", "cbz", "cbr", "rtf", "doc", "docx",
-                                "chm", "prc"];
+/// Reflowable formats (the book reader); PDF, DjVu and comics use the page reader (crate::pages).
+const READER_EXT: &[&str] = &["epub", "txt", "html", "htm", "mobi", "azw3", "azw", "prc", "fb2", "rtf", "docx"];
+
+/// Can Kindle Linux open this file as a book?
+pub fn is_book(path: &Path) -> bool {
+    let ext = ext_of(path);
+    READER_EXT.contains(&ext.as_str()) || crate::pages::PAGE_EXT.contains(&ext.as_str()) || is_fb2_zip(path)
+}
+
+fn is_fb2_zip(path: &Path) -> bool {
+    path.to_string_lossy().to_lowercase().ends_with(".fb2.zip")
+}
 
 fn ext_of(p: &Path) -> String {
     p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
@@ -49,21 +57,27 @@ pub fn book_title(fname: &str) -> String {
     s.replace("_ ", ": ").replace('_', " ").trim().to_string()
 }
 
-/// Open a book: built-in reader for EPUB/TXT, KOReader for everything else.
+/// Open a book: the book reader for reflowable text, the page reader for PDF, DjVu and comics.
 pub fn open_book(sys: &Sys, path: &str) -> Cmd {
-    let ext = ext_of(Path::new(path));
-    if READER_EXT.contains(&ext.as_str()) {
-        match Reader::open(path, sys) {
-            Ok(r) => return Cmd::Push(Box::new(r)),
-            Err(e) => return Cmd::Dialog(Dialog::message("Can't open book", &format!("{e}\n\nTry Open in KOReader."))),
-        }
+    let p = Path::new(path);
+    let ext = ext_of(p);
+    if crate::pages::PAGE_EXT.contains(&ext.as_str()) {
+        return match crate::pages::PageReader::open(path, sys) {
+            Ok(r) => Cmd::Push(Box::new(r)),
+            Err(e) => Cmd::Dialog(Dialog::message("Can't open this file", &e)),
+        };
     }
-    open_koreader(sys, Some(path))
-}
-
-pub fn open_koreader(sys: &Sys, path: Option<&str>) -> Cmd {
-    sys.request("koreader", path.unwrap_or(""));
-    Cmd::Quit(10)
+    if READER_EXT.contains(&ext.as_str()) || is_fb2_zip(p) {
+        return match Reader::open(path, sys) {
+            Ok(r) => Cmd::Push(Box::new(r)),
+            Err(e) => Cmd::Dialog(Dialog::message("Can't open this book", &e)),
+        };
+    }
+    if DRM_EXT.contains(&ext.as_str()) {
+        return Cmd::Dialog(Dialog::message("Can't open here", "This is an Amazon store book with DRM. Only the stock Kindle \
+            reader can open it. Use Power → Exit to stock Kindle."));
+    }
+    Cmd::Dialog(Dialog::message("Unsupported file", &format!("Kindle Linux can't open .{ext} files.")))
 }
 
 // --- Home ------------------------------------------------------------------------------
@@ -217,7 +231,6 @@ const T_BOOK_DELETE: u32 = 2;
 
 const ID_HOME_STATUS: u32 = 9_000;
 const ID_SORT: u32 = 1_000_000;
-const ID_KOREADER: u32 = 1_000_001;
 const ID_VIEW: u32 = 1_000_002;
 const LIST_ROW: i32 = 76;
 const GRID_ROW: i32 = 289;
@@ -276,7 +289,7 @@ impl Books {
                     continue;
                 }
                 let ext = ext_of(&p);
-                if BOOK_EXT.contains(&ext.as_str()) {
+                if BOOK_EXT.contains(&ext.as_str()) || is_fb2_zip(&p) {
                     found.push(Book { path: p.to_string_lossy().into_owned(), title: book_title(&name),
                                       drm: DRM_EXT.contains(&ext.as_str()), ext: ext.to_uppercase(),
                                       size: m.len(), mtime: mtime(&m) });
@@ -322,12 +335,10 @@ impl App for Books {
 
     fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
         let b = Btn::size(19);
-        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x0 + 222, a.y0 + 62), "Open KOReader", Some(Hit::App(ID_KOREADER)),
-                  Btn { inverted: true, ..b });
         let label = if self.by_title { "Sort: A–Z" } else { "Sort: Recent" };
-        cx.button(Rect::new(a.x0 + 230, a.y0 + 10, a.x0 + 410, a.y0 + 62), label, Some(Hit::App(ID_SORT)), b);
+        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.cx() - 4, a.y0 + 62), label, Some(Hit::App(ID_SORT)), b);
         let view = if self.covers_view { "≡ List" } else { "▦ Covers" };
-        cx.button(Rect::new(a.x0 + 418, a.y0 + 10, a.x1 - 12, a.y0 + 62), view, Some(Hit::App(ID_VIEW)), b);
+        cx.button(Rect::new(a.cx() + 4, a.y0 + 10, a.x1 - 12, a.y0 + 62), view, Some(Hit::App(ID_VIEW)), b);
         let hint = if self.covers_view { "Tap a book to read  ·  hold it for more" } else { "Tap a book to read  ·  ⋯ for more" };
         cx.text(a.cx(), a.y1 - 14, hint, 14, DARK, Anchor::MM);
         let area = Rect::new(a.x0, a.y0 + 74, a.x1, a.y1 - 26);
@@ -426,7 +437,7 @@ impl App for Books {
         Cmd::None
     }
 
-    fn action(&mut self, id: u32, long: bool, sys: &mut Sys) -> Cmd {
+    fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
         if self.pager.action(id) {
             self.want_covers(sys);
             return Cmd::Redraw;
@@ -445,13 +456,11 @@ impl App for Books {
                 self.want_covers(sys);
                 Cmd::Full
             }
-            ID_KOREADER => open_koreader(sys, None),
             i if i & ID_MORE != 0 => {
                 let i = (i & !ID_MORE) as usize;
                 let Some(b) = self.books.get(i) else { return Cmd::None };
                 self.sel = i;
-                let items = if b.drm { vec!["Delete".to_string()] }
-                            else { vec!["Read".to_string(), "Open in KOReader".to_string(), "Delete".to_string()] };
+                let items = if b.drm { vec!["Delete".to_string()] } else { vec!["Read".to_string(), "Delete".to_string()] };
                 let (title, _, _) = self.display(b);
                 Cmd::Dialog(Dialog::menu(T_BOOK_MENU, &title, items))
             }
@@ -459,7 +468,6 @@ impl App for Books {
                 Some(b) if b.drm => Cmd::Dialog(Dialog::message("Can't open here",
                     "This is an Amazon store book with DRM. Only the stock Kindle reader can open it. \
                      Use Power → Exit to stock Kindle.")),
-                Some(b) if long => open_koreader(sys, Some(&b.path.clone())),
                 Some(b) => open_book(sys, &b.path.clone()),
                 None => Cmd::None,
             },
@@ -475,13 +483,12 @@ impl App for Books {
         match tag {
             T_BOOK_MENU => match (b.drm, choice) {
                 (false, 0) => open_book(sys, &path),
-                (false, 1) => open_koreader(sys, Some(&path)),
                 _ => Cmd::Dialog(Dialog::confirm(T_BOOK_DELETE, "Delete this book?",
                     &format!("{}\n\nThe file is removed from the Kindle.", self.display(b).0), "Delete")),
             },
             T_BOOK_DELETE => {
                 let r = std::fs::remove_file(&path);
-                // KOReader / stock Kindle keep per-book data in a folder next to it
+                // the stock Kindle keeps per-book data in a folder next to it
                 let sdr = Path::new(&path).with_extension("sdr");
                 if sdr.is_dir() {
                     let _ = std::fs::remove_dir_all(sdr);
@@ -524,7 +531,6 @@ struct Entry {
 enum FileAct {
     Read,
     Edit,
-    KOReader,
     Rename,
     Delete,
 }
@@ -589,7 +595,7 @@ impl Files {
             return Cmd::Full;
         }
         let ext = ext_of(&e.path);
-        if ext == "epub" || KOREADER_EXT.contains(&ext.as_str()) {
+        if is_book(&e.path) {
             return open_book(sys, &e.path.to_string_lossy());
         }
         if DRM_EXT.contains(&ext.as_str()) {
@@ -610,16 +616,12 @@ impl Files {
         self.menu.clear();
         let mut labels = vec![];
         if !e.dir {
-            if READER_EXT.contains(&ext_of(&e.path).as_str()) {
+            if is_book(&e.path) {
                 self.menu.push(FileAct::Read);
                 labels.push("Read".to_string());
             }
             self.menu.push(FileAct::Edit);
             labels.push("Edit as text".to_string());
-            if KOREADER_EXT.contains(&ext_of(&e.path).as_str()) || ext_of(&e.path) == "txt" {
-                self.menu.push(FileAct::KOReader);
-                labels.push("Open in KOReader".into());
-            }
         }
         self.menu.push(FileAct::Rename);
         labels.push("Rename".into());
@@ -706,7 +708,6 @@ impl App for Files {
                 match self.menu.get(choice) {
                     Some(FileAct::Read) => return open_book(sys, &e.path.to_string_lossy()),
                     Some(FileAct::Edit) => return Cmd::Push(Box::new(Editor::new(&e.path))),
-                    Some(FileAct::KOReader) => return open_koreader(sys, Some(&e.path.to_string_lossy())),
                     Some(FileAct::Rename) => return Cmd::Dialog(Dialog::input(TAG_RENAME, "Rename", &e.name.clone(), "Rename")),
                     Some(FileAct::Delete) => return Cmd::Dialog(Dialog::confirm(TAG_DELETE, "Delete?",
                         &format!("Delete {}? This can't be undone.", e.name), "Delete")),

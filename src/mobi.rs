@@ -50,6 +50,111 @@ pub fn palmdoc(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// HUFF/CDIC decompression (the dictionary scheme some MOBI files use instead of PalmDOC).
+pub struct HuffCdic {
+    dict1: Vec<(u32, bool, u64)>, // (code length, terminal, max code) by the code's top byte
+    mincode: Vec<u64>,
+    maxcode: Vec<u64>,
+    dict: Vec<(Vec<u8>, bool)>, // phrases; bool = already expanded
+}
+
+impl HuffCdic {
+    pub fn new(recs: &[&[u8]]) -> Result<HuffCdic, String> {
+        let bad = || "This MOBI's HUFF/CDIC dictionary is damaged.".to_string();
+        let huff = recs.first().ok_or_else(bad)?;
+        if huff.len() < 24 || &huff[0..4] != b"HUFF" {
+            return Err(bad());
+        }
+        let (off1, off2) = (be32(huff, 8), be32(huff, 12));
+        if huff.len() < off1 + 1024 || huff.len() < off2 + 256 {
+            return Err(bad());
+        }
+        let mut dict1 = Vec::with_capacity(256);
+        for i in 0..256 {
+            let v = be32(huff, off1 + i * 4) as u64;
+            let (len, term, max) = ((v & 0x1f) as u32, v & 0x80 != 0, v >> 8);
+            if len == 0 {
+                return Err(bad());
+            }
+            dict1.push((len, term, ((max + 1) << (32 - len)) - 1));
+        }
+        let (mut mincode, mut maxcode) = (vec![0u64], vec![0u64]);
+        for len in 1..=32u32 {
+            let i = (len as usize - 1) * 2;
+            let (mn, mx) = (be32(huff, off2 + i * 4) as u64, be32(huff, off2 + (i + 1) * 4) as u64);
+            mincode.push(mn << (32 - len));
+            maxcode.push(((mx + 1) << (32 - len)) - 1);
+        }
+        let mut dict = vec![];
+        for c in &recs[1..] {
+            if c.len() < 16 || &c[0..4] != b"CDIC" {
+                return Err(bad());
+            }
+            let (phrases, bits) = (be32(c, 8), be32(c, 12));
+            let n = (1usize << bits).min(phrases.saturating_sub(dict.len()));
+            for k in 0..n {
+                let off = be16(c, 16 + k * 2);
+                let p = 16 + off;
+                if p + 2 > c.len() {
+                    return Err(bad());
+                }
+                let blen = be16(c, p);
+                let data = c.get(p + 2..(p + 2 + (blen & 0x7fff)).min(c.len())).unwrap_or(&[]).to_vec();
+                dict.push((data, blen & 0x8000 != 0));
+            }
+        }
+        Ok(HuffCdic { dict1, mincode, maxcode, dict })
+    }
+
+    pub fn unpack(&mut self, data: &[u8], depth: u32) -> Vec<u8> {
+        let mut out = vec![];
+        if depth > 32 {
+            return out;
+        }
+        let mut bitsleft = data.len() as i64 * 8;
+        let mut buf = data.to_vec();
+        buf.extend_from_slice(&[0; 8]);
+        let rd = |p: usize| u64::from_be_bytes(buf[p..p + 8].try_into().unwrap());
+        let mut pos = 0;
+        let mut x = rd(pos);
+        let mut n: i64 = 32;
+        loop {
+            if n <= 0 {
+                pos += 4;
+                if pos + 8 > buf.len() {
+                    break;
+                }
+                x = rd(pos);
+                n += 32;
+            }
+            let code = (x >> n) & 0xffff_ffff;
+            let (mut len, term, mut max) = self.dict1[(code >> 24) as usize];
+            if !term {
+                while len < 32 && code < self.mincode[len as usize] {
+                    len += 1;
+                }
+                max = self.maxcode[len as usize];
+            }
+            n -= len as i64;
+            bitsleft -= len as i64;
+            if bitsleft < 0 {
+                break;
+            }
+            let r = ((max - code) >> (32 - len)) as usize;
+            let Some((slice, done)) = self.dict.get(r).cloned() else { break };
+            let slice = if done {
+                slice
+            } else {
+                let s = self.unpack(&slice, depth + 1);
+                self.dict[r] = (s.clone(), true);
+                s
+            };
+            out.extend_from_slice(&slice);
+        }
+        out
+    }
+}
+
 /// Size of a backward-encoded trailing entry ending at `end`.
 fn trailing_entry_size(data: &[u8], end: usize) -> usize {
     let (mut bitpos, mut result, mut size) = (0u32, 0usize, end);
@@ -160,9 +265,14 @@ pub fn load(path: &str) -> Result<MobiBook, String> {
     if be16(h, 12) != 0 {
         return Err("This book is DRM-protected; only the stock Kindle can open it.".into());
     }
-    if compression == 17480 {
-        return Err("This MOBI uses HUFF/CDIC compression, which isn't supported yet. Open it in KOReader.".into());
-    }
+    // HUFF/CDIC (dictionary) compression: records listed in the MOBI header at 0x70/0x74
+    let huff = if compression == 17480 {
+        let (off, num) = (be32(h, 0x70), be32(h, 0x74));
+        let recs: Vec<&[u8]> = (0..num).filter_map(|i| rec(base + off + i).or_else(|| rec(off + i))).collect();
+        Some(HuffCdic::new(&recs)?)
+    } else {
+        None
+    };
     let (enc, extra_flags, version) = if h.len() >= 0xf4 && &h[16..20] == b"MOBI" {
         let hlen = be32(h, 20);
         let flags = if hlen >= 0xe4 { be16(h, 0xf2) } else { 0 };
@@ -170,14 +280,16 @@ pub fn load(path: &str) -> Result<MobiBook, String> {
     } else {
         (1252, 0, 0)
     };
+    let mut huff = huff;
     let mut raw: Vec<u8> = vec![];
     for i in 1..=text_records {
         let Some(r) = rec(base + i) else { break };
         let r = strip_trailing(r, extra_flags);
-        match compression {
-            1 => raw.extend_from_slice(r),
-            2 => raw.extend(palmdoc(r)),
-            c => return Err(format!("Unknown MOBI compression {c}")),
+        match (compression, huff.as_mut()) {
+            (1, _) => raw.extend_from_slice(r),
+            (2, _) => raw.extend(palmdoc(r)),
+            (17480, Some(hc)) => raw.extend(hc.unpack(r, 0)),
+            (c, _) => return Err(format!("Unknown MOBI compression {c}")),
         }
     }
     let text = if enc == 1252 { cp1252(&raw) } else { String::from_utf8_lossy(&raw).into_owned() };
