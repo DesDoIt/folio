@@ -498,7 +498,18 @@ impl Ssh {
             .spawn().map_err(|e| e.to_string())?;
         child.stdin.take().unwrap().write_all(format!("root:{pw}\n").as_bytes()).map_err(|e| e.to_string())?;
         let out = child.wait_with_output().map_err(|e| e.to_string())?;
-        if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        // keep the password across image updates (the launcher puts it back into /etc/shadow)
+        if let Some(line) = std::fs::read_to_string("/etc/shadow").ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("root:")).map(String::from)) {
+            let p = format!("{STATE}/root-shadow");
+            let _ = std::fs::write(&p, format!("{line}\n"));
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
     }
 
     pub fn start(&self) {

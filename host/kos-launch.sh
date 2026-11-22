@@ -96,7 +96,26 @@ mount_all() {
     mkdir -p "$R/run" "$R/tmp"
     mount -t tmpfs -o size=16m tmpfs "$R/run"
     mount -t tmpfs -o size=32m tmpfs "$R/tmp"
+    keep_state
     return 0
+}
+
+# Settings, saved Wi-Fi networks, the SSH host key and root password live on the Kindle's own
+# persistent partition (not the USB drive, so passwords aren't exposed over USB), so they survive
+# reinstalling or updating the image.
+PERSIST=/var/local/kindle-linux
+keep_state() {
+    mkdir -p "$PERSIST/dropbear" "$R/var/lib/kos" "$R/etc/dropbear" || return
+    if [ ! -f "$PERSIST/.created" ]; then
+        cp -a "$R/var/lib/kos/." "$PERSIST/" 2>/dev/null   # first run: keep what this image already has
+        touch "$PERSIST/.created"
+    fi
+    mount -o bind "$PERSIST" "$R/var/lib/kos" && log "state: $PERSIST"
+    mount -o bind "$PERSIST/dropbear" "$R/etc/dropbear"
+    if [ -s "$PERSIST/root-shadow" ]; then
+        line=$(head -1 "$PERSIST/root-shadow")
+        case "$line" in root:*) sed -i "s|^root:.*|$line|" "$R/etc/shadow" ;; esac
+    fi
 }
 
 # Kill chroot processes with a given command name (e.g. our wpa_supplicant), leaving the rest.
@@ -204,7 +223,7 @@ kill_chroot_procs() {
 
 umount_all() {
     kill_chroot_procs
-    for d in kindle/sys kindle/proc kindle/dev kindle/var kindle tmp run mnt/us dev/pts dev sys proc; do
+    for d in etc/dropbear var/lib/kos kindle/sys kindle/proc kindle/dev kindle/var kindle tmp run mnt/us dev/pts dev sys proc; do
         umount "$R/$d" 2>/dev/null || umount -l "$R/$d" 2>/dev/null
     done
     umount "$R" 2>/dev/null || umount -l "$R" 2>/dev/null

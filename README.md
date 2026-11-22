@@ -122,16 +122,19 @@ tools/screenshots.sh      # regenerates docs/screenshots/
 
 ## Installing
 
-Requires a jailbroken Kindle (see kindlemodding.org). KOReader (installed with KPM) is optional: Kindle
-Linux uses it for PDFs, MOBI/AZW3 and comics. To keep it out of the stock Kindle's library, delete
-`documents/KOReader.sh`; Kindle Linux launches KOReader directly from `koreader/`.
+**➡️ Full step-by-step guide: [docs/INSTALL.md](docs/INSTALL.md)**. It covers checking your firmware,
+jailbreaking (with links to the community guides), building, copying, first start, updating,
+uninstalling and troubleshooting.
 
-1. Connect the Kindle over USB and run `build/install.sh` (or copy by hand: `out/kos-rootfs.ext3`,
-   `out/kos` and `host/kos-*.sh`, `host/kindle-linux.conf` to `kos/`, and `host/KindleLinux*.sh` to
-   `documents/`).
-2. Eject, then tap **Kindle Linux** in the library.
-3. Optional: tap **Kindle Linux: boot ON** to get a boot menu at power-on (5 s countdown, defaults to
-   Kindle Linux); **boot OFF** removes it.
+In short:
+
+1. Jailbreak the Kindle: use the [jailbreak wizard](https://kindlemodding.org/jailbreak-wizard.html) on
+   kindlemodding.org to pick the right method (WinterBreak, WinterBreak2, …) and follow its guide.
+2. Build the files with Docker: `build/build.sh`.
+3. Connect the Kindle over USB and run `build/install.sh`. Eject it.
+4. Tap **Kindle Linux** in the library. Optional: **Kindle Linux: boot ON** adds a boot menu at power-on.
+
+KOReader is optional; Kindle Linux uses it for PDFs and comics if it's installed.
 
 ### Escape hatches
 
