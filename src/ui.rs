@@ -52,6 +52,8 @@ pub enum Hit {
     DialogButton(usize),
     DialogField,
     Swallow,
+    /// The header's status area.
+    Status,
 }
 
 pub struct HitBox {
@@ -396,6 +398,13 @@ impl Dialog {
         self.message = m.into();
         self
     }
+    /// Rename the first ("Cancel") button, e.g. "Keep browsing" after something finished.
+    pub fn with_cancel(mut self, label: &str) -> Dialog {
+        if let Some(b) = self.buttons.first_mut() {
+            *b = label.into();
+        }
+        self
+    }
     pub fn password(mut self) -> Dialog {
         self.password = true;
         self
@@ -412,17 +421,27 @@ impl Dialog {
         let x1 = cx.w() - m;
         let lines = if self.message.is_empty() { vec![] } else { cx.f.wrap(&self.message, Face::Sans, 22, x1 - x0 - 40) };
         let mut h = 70 + lines.len() as i32 * 30 + if self.text.is_some() { 70 } else { 0 } + 90;
+        // long menus get shorter rows so they always fit above the bottom edge
+        let avail = bottom - HEADER_H - 20;
+        let row = if self.menu.is_empty() { 66 } else { ((avail - 90) / self.menu.len() as i32).clamp(44, 66) };
         if !self.menu.is_empty() {
-            h = 70 + self.menu.len() as i32 * 66 + 20;
+            h = 70 + self.menu.len() as i32 * row + 20;
         }
         let top = (HEADER_H + 10).max((HEADER_H + bottom - h) / 2);
         let r = Rect::new(x0, top, x1, (top + h).min(bottom));
         cx.hits.clear();
-        cx.hit(Rect::new(0, 0, cx.w(), cx.h()), Hit::Swallow, None, "");
+        // tapping outside a menu or message closes it (as Cancel); text prompts need an explicit button
+        let outside = if self.text.is_none() { Hit::DialogButton(CANCEL) } else { Hit::Swallow };
+        cx.hit(Rect::new(0, 0, cx.w(), cx.h()), outside, None, "");
+        cx.hit(r, Hit::Swallow, None, "");
         cx.c.fill(Rect::new(r.x0 + 6, r.y0 + 6, r.x1 + 6, r.y1 + 6), DARK);
         cx.c.fill(r, WHITE);
         cx.c.outline(r, 3, BLACK);
-        cx.bold(r.x0 + 20, r.y0 + 18, &self.title.clone(), 26, BLACK, Anchor::LT);
+        let title = cx.ellipsize(&self.title.clone(), Face::Bold, 26, r.w() - 100);
+        cx.bold(r.x0 + 20, r.y0 + 18, &title, 26, BLACK, Anchor::LT);
+        if !self.menu.is_empty() {
+            cx.button(Rect::new(r.x1 - 64, r.y0 + 10, r.x1 - 12, r.y0 + 58), "✕", Some(Hit::DialogButton(CANCEL)), Btn::size(22));
+        }
         let mut y = r.y0 + 62;
         for ln in &lines {
             cx.text(r.x0 + 20, y, ln, 22, BLACK, Anchor::LT);
@@ -430,8 +449,9 @@ impl Dialog {
         }
         if !self.menu.is_empty() {
             for (i, item) in self.menu.clone().iter().enumerate() {
-                cx.button(Rect::new(r.x0 + 16, y, r.x1 - 16, y + 56), item, Some(Hit::DialogButton(i)), Btn::size(22));
-                y += 66;
+                let fs = if row < 60 { 19 } else { 22 };
+                cx.button(Rect::new(r.x0 + 16, y, r.x1 - 16, y + row - 10), item, Some(Hit::DialogButton(i)), Btn::size(fs));
+                y += row;
             }
             return;
         }
@@ -455,6 +475,12 @@ impl Dialog {
             bx += bw + 16;
         }
     }
+}
+
+/// A "⋯" button at the right end of a list row, for the row's extra actions (rename, delete…).
+/// Call it after the row's own `cx.hit` so it takes priority. Rows should keep ~70 px free on the right.
+pub fn more_button(cx: &mut Ctx, r: Rect, id: u32) {
+    cx.button(Rect::new(r.x1 - 64, r.cy() - 24, r.x1 - 14, r.cy() + 24), "⋯", Some(Hit::App(id)), Btn::size(22));
 }
 
 pub trait App {
@@ -489,6 +515,10 @@ pub trait App {
     /// Called every main-loop iteration (~100 ms when busy).
     fn poll(&mut self, _sys: &mut Sys) -> Cmd {
         Cmd::None
+    }
+    /// The header's ‹ (and the edge swipe): go up a level inside the app; None leaves the app.
+    fn back(&mut self, _sys: &mut Sys) -> Option<Cmd> {
+        None
     }
     fn on_show(&mut self, _sys: &mut Sys) {}
     fn on_hide(&mut self, _sys: &mut Sys) {}
@@ -775,7 +805,7 @@ impl Ui {
         let cmd = self.top().gesture(g, sys);
         if let Cmd::None = cmd {
             if g.kind == Kind::SwipeRight && g.x < 60 && self.stack.len() > 1 {
-                self.pop(sys);
+                self.go_back(sys);
             }
         } else {
             self.apply(cmd, sys);
@@ -798,9 +828,14 @@ impl Ui {
 
     fn dispatch(&mut self, hit: Hit, long: bool, sys: &mut Sys) {
         match hit {
-            Hit::Back => self.pop(sys),
+            Hit::Back => self.go_back(sys),
             Hit::Home => self.home(sys),
             Hit::Swallow => {}
+            Hit::Status => {
+                if self.top().title() != "System" {
+                    self.push(Box::new(crate::settings::SystemApp), sys);
+                }
+            }
             Hit::App(id) => {
                 let cmd = self.top().action(id, long, sys);
                 self.request(Update::Quality);
@@ -836,6 +871,13 @@ impl Ui {
                 }
             }
             Hit::DialogButton(i) => self.close_dialog(i, sys),
+        }
+    }
+
+    fn go_back(&mut self, sys: &mut Sys) {
+        match self.top().back(sys) {
+            Some(cmd) => self.apply(cmd, sys),
+            None => self.pop(sys),
         }
     }
 
@@ -877,6 +919,10 @@ fn draw_header(cx: &mut Ctx, title: &str, nav: bool, sys: &mut Sys) {
     right.push(crate::sys::clock("%H:%M"));
     let rs = right.join("  ");
     let rw = cx.text(w - 10, HEADER_H / 2, &rs, 18, BLACK, Anchor::RM);
+    if nav {
+        // the status (Wi-Fi, battery) opens System info
+        cx.hit(Rect::new(w - rw - 20, 0, w, HEADER_H), Hit::Status, None, "status");
+    }
     let t = cx.ellipsize(title, Face::Bold, 24, w - x - rw - 24);
     cx.bold(x, HEADER_H / 2, &t, 24, BLACK, Anchor::LM);
 }

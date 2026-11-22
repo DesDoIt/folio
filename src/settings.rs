@@ -86,8 +86,8 @@ impl App for WifiApp {
     fn render(&mut self, cx: &mut Ctx, a: Rect, sys: &mut Sys) {
         let on = sys.wifi.running();
         let scanning = self.scan.is_some();
-        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x0 + 200, a.y0 + 62), if on { "Wi-Fi: ON" } else { "Wi-Fi: OFF" },
-                  Some(Hit::App(ID_TOGGLE)), Btn { inverted: on, ..Btn::size(22) });
+        cx.button(Rect::new(a.x0 + 12, a.y0 + 10, a.x0 + 220, a.y0 + 62), if on { "Turn Wi-Fi off" } else { "Turn Wi-Fi on" },
+                  Some(Hit::App(ID_TOGGLE)), Btn { inverted: !on, ..Btn::size(20) });
         cx.button(Rect::new(a.x1 - 180, a.y0 + 10, a.x1 - 12, a.y0 + 62), if scanning { "Scanning…" } else { "Scan" },
                   Some(Hit::App(ID_SCAN)), Btn { disabled: !on || scanning, ..Btn::size(22) });
         let y = a.y0 + 80;
@@ -195,6 +195,12 @@ impl App for WifiApp {
             i => {
                 let Some(n) = self.networks.get(i as usize).cloned() else { return Cmd::None };
                 self.sel = i as usize;
+                let connected = self.status.get("wpa_state").map(String::as_str) == Some("COMPLETED")
+                    && self.status.get("ssid") == Some(&n.ssid);
+                if connected {
+                    return Cmd::Dialog(Dialog::confirm(TAG_FORGET, &format!("Connected to {}", n.ssid),
+                        "You're on this network. Forget it to stop connecting automatically.", "Forget"));
+                }
                 if n.secure {
                     Cmd::Dialog(Dialog::input(TAG_PASSWORD, &format!("Password for {}", n.ssid), "", "Connect")
                         .password().with_message("Tap the field to show or hide the password."))
@@ -393,7 +399,7 @@ impl App for SettingsApp {
         }
         let (by, mid) = (a.y1 - 66, a.cx());
         if self.page > 0 {
-            cx.button(Rect::new(a.x0 + 12, by, mid - 70, a.y1 - 12), "◀ Back", Some(Hit::App(S_PREV)), Btn::size(20));
+            cx.button(Rect::new(a.x0 + 12, by, mid - 70, a.y1 - 12), "◀ Prev", Some(Hit::App(S_PREV)), Btn::size(20));
         }
         cx.text(mid, by + 27, &format!("{} / {}", self.page + 1, PAGES), 18, DARK, Anchor::MM);
         if self.page + 1 < PAGES {

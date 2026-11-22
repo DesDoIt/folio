@@ -26,7 +26,7 @@ const T_CLEAR: u32 = 1;
 
 impl Sketch {
     pub fn new() -> Sketch {
-        Sketch { w: 0, h: 0, ink: vec![], pen: 3, eraser: false, last: None, origin: (0, HEADER_H + TOOLBAR_H), dirty: false }
+        Sketch { w: 0, h: 0, ink: vec![], pen: 2, eraser: false, last: None, origin: (0, HEADER_H + TOOLBAR_H), dirty: false }
     }
 
     fn dot(&mut self, x: i32, y: i32) {
@@ -68,6 +68,13 @@ impl Sketch {
 }
 
 impl App for Sketch {
+    /// Leaving with ‹ or ⌂ keeps the drawing (saved like the Save button would).
+    fn on_hide(&mut self, sys: &mut Sys) {
+        if self.dirty && self.save(sys).is_ok() {
+            self.dirty = false;
+        }
+    }
+
     fn title(&self) -> String {
         "Sketch".into()
     }

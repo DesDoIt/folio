@@ -146,7 +146,8 @@ impl App for Home {
             let rect = Rect::new(x, y, x + tw, y + th);
             cx.c.round_rect(rect, 14, WHITE, 2, BLACK);
             cx.text(rect.cx(), rect.y0 + th / 2 - 12, glyph, 40, BLACK, Anchor::MM);
-            cx.bold(rect.cx(), rect.y1 - 20, label, 16, BLACK, Anchor::MM);
+            let l = cx.ellipsize(label, Face::Bold, 16, tw - 8);
+            cx.bold(rect.cx(), rect.y1 - 20, &l, 16, BLACK, Anchor::MM);
             cx.hit(rect, Hit::App(i as u32), None, label);
         }
         let b = sys::battery(sys.sim);
@@ -155,9 +156,13 @@ impl App for Home {
         let line = format!("Battery {}%   ·   RAM available {} MB   ·   {}",
                            b.capacity.map_or("?".into(), |c| c.to_string()), avail, ip);
         cx.text(a.cx(), a.y1 - 28, &line, 17, DARK, Anchor::MM);
+        cx.hit(Rect::new(a.x0, a.y1 - 56, a.x1, a.y1), Hit::App(ID_HOME_STATUS), None, "status");
     }
 
     fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
+        if id == ID_HOME_STATUS {
+            return Cmd::Push(Box::new(crate::settings::SystemApp));
+        }
         let Some((_, _, tile)) = TILES.get(id as usize) else { return Cmd::None };
         match tile {
             Tile::Books => Cmd::Push(Box::new(Books::new(sys))),
@@ -203,8 +208,14 @@ pub struct Books {
     loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
     covers_shown: usize,
     progress: std::collections::HashMap<String, crate::covers::Progress>,
+    sel: usize,
 }
 
+const ID_MORE: u32 = 0x8000_0000;
+const T_BOOK_MENU: u32 = 1;
+const T_BOOK_DELETE: u32 = 2;
+
+const ID_HOME_STATUS: u32 = 9_000;
 const ID_SORT: u32 = 1_000_000;
 const ID_KOREADER: u32 = 1_000_001;
 const ID_VIEW: u32 = 1_000_002;
@@ -222,7 +233,7 @@ impl Books {
         let covers_view = sys.config.get("books_view") != "list";
         let mut b = Books { pager: Pager::new(if covers_view { GRID_ROW } else { LIST_ROW }), books: vec![], by_title: false,
                             covers_view, covers: Default::default(), loading: Default::default(), covers_shown: 0,
-                            progress: Default::default() };
+                            progress: Default::default(), sel: 0 };
         b.scan(sys);
         b
     }
@@ -317,7 +328,8 @@ impl App for Books {
         cx.button(Rect::new(a.x0 + 230, a.y0 + 10, a.x0 + 410, a.y0 + 62), label, Some(Hit::App(ID_SORT)), b);
         let view = if self.covers_view { "≡ List" } else { "▦ Covers" };
         cx.button(Rect::new(a.x0 + 418, a.y0 + 10, a.x1 - 12, a.y0 + 62), view, Some(Hit::App(ID_VIEW)), b);
-        cx.text(a.cx(), a.y1 - 14, "Tap: read  ·  Hold: open in KOReader", 14, DARK, Anchor::MM);
+        let hint = if self.covers_view { "Tap a book to read  ·  hold it for more" } else { "Tap a book to read  ·  ⋯ for more" };
+        cx.text(a.cx(), a.y1 - 14, hint, 14, DARK, Anchor::MM);
         let area = Rect::new(a.x0, a.y0 + 74, a.x1, a.y1 - 26);
         let books = &self.books;
         if !self.covers_view {
@@ -327,7 +339,7 @@ impl App for Books {
                 let fill = if b.drm { MID } else { BLACK };
                 let p = progress.get(&b.path);
                 let title = p.map(|p| p.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| b.title.clone());
-                let t = cx.ellipsize(&title, Face::Bold, 22, r.w() - 130);
+                let t = cx.ellipsize(&title, Face::Bold, 22, r.w() - 190);
                 cx.bold(r.x0 + 20, r.y0 + 12, &t, 22, fill, Anchor::LT);
                 let mut sub = vec![];
                 if let Some(a) = p.map(|p| p.author.as_str()).filter(|a| !a.is_empty()) {
@@ -340,13 +352,14 @@ impl App for Books {
                 if b.drm {
                     sub.push("Amazon DRM – stock Kindle only".into());
                 }
-                let sub = cx.ellipsize(&sub.join("  ·  "), Face::Sans, 16, r.w() - 130);
+                let sub = cx.ellipsize(&sub.join("  ·  "), Face::Sans, 16, r.w() - 190);
                 cx.text(r.x0 + 20, r.y0 + 44, &sub, 16, DARK, Anchor::LT);
-                let tag = Rect::new(r.x1 - 92, r.y0 + 18, r.x1 - 20, r.y0 + 54);
+                let tag = Rect::new(r.x1 - 150, r.y0 + 20, r.x1 - 80, r.y0 + 54);
                 cx.c.round_rect(tag, 8, WHITE, 2, fill);
                 let e: String = b.ext.chars().take(4).collect();
                 cx.bold(tag.cx(), tag.cy(), &e, 16, fill, Anchor::MM);
-                cx.hit(r, Hit::App(i as u32), Some(Hit::App(i as u32)), &b.title);
+                cx.hit(r, Hit::App(i as u32), Some(Hit::App(ID_MORE | i as u32)), &b.title);
+                more_button(cx, r, ID_MORE | i as u32);
             });
             return;
         }
@@ -394,7 +407,7 @@ impl App for Books {
                     let m = if b.drm { "Kindle store".to_string() } else { format!("{} · new", b.ext) };
                     cx.text(cell.cx(), my, &m, 13, DARK, Anchor::MT);
                 }
-                cx.hit(cell, Hit::App(i as u32), Some(Hit::App(i as u32)), &b.title);
+                cx.hit(cell, Hit::App(i as u32), Some(Hit::App(ID_MORE | i as u32)), &b.title);
             }
         });
     }
@@ -433,6 +446,15 @@ impl App for Books {
                 Cmd::Full
             }
             ID_KOREADER => open_koreader(sys, None),
+            i if i & ID_MORE != 0 => {
+                let i = (i & !ID_MORE) as usize;
+                let Some(b) = self.books.get(i) else { return Cmd::None };
+                self.sel = i;
+                let items = if b.drm { vec!["Delete".to_string()] }
+                            else { vec!["Read".to_string(), "Open in KOReader".to_string(), "Delete".to_string()] };
+                let (title, _, _) = self.display(b);
+                Cmd::Dialog(Dialog::menu(T_BOOK_MENU, &title, items))
+            }
             i => match self.books.get(i as usize) {
                 Some(b) if b.drm => Cmd::Dialog(Dialog::message("Can't open here",
                     "This is an Amazon store book with DRM. Only the stock Kindle reader can open it. \
@@ -441,6 +463,36 @@ impl App for Books {
                 Some(b) => open_book(sys, &b.path.clone()),
                 None => Cmd::None,
             },
+        }
+    }
+
+    fn dialog(&mut self, tag: u32, choice: usize, _t: String, sys: &mut Sys) -> Cmd {
+        if choice == CANCEL {
+            return Cmd::None;
+        }
+        let Some(b) = self.books.get(self.sel) else { return Cmd::None };
+        let path = b.path.clone();
+        match tag {
+            T_BOOK_MENU => match (b.drm, choice) {
+                (false, 0) => open_book(sys, &path),
+                (false, 1) => open_koreader(sys, Some(&path)),
+                _ => Cmd::Dialog(Dialog::confirm(T_BOOK_DELETE, "Delete this book?",
+                    &format!("{}\n\nThe file is removed from the Kindle.", self.display(b).0), "Delete")),
+            },
+            T_BOOK_DELETE => {
+                let r = std::fs::remove_file(&path);
+                // KOReader / stock Kindle keep per-book data in a folder next to it
+                let sdr = Path::new(&path).with_extension("sdr");
+                if sdr.is_dir() {
+                    let _ = std::fs::remove_dir_all(sdr);
+                }
+                self.scan(sys);
+                match r {
+                    Ok(()) => Cmd::Batch(vec![Cmd::Full, Cmd::Toast("Book deleted".into())]),
+                    Err(e) => Cmd::Dialog(Dialog::message("Couldn't delete", &e.to_string())),
+                }
+            }
+            _ => Cmd::None,
         }
     }
 
@@ -485,6 +537,7 @@ pub struct Files {
     sel: usize,
     menu: Vec<FileAct>,
     error: Option<String>,
+    root: PathBuf, // where this browser started; ‹ goes up folders until here
 }
 
 const ID_UP: u32 = 900_001;
@@ -499,7 +552,8 @@ const TAG_NEWFILE: u32 = 5;
 
 impl Files {
     pub fn new(sys: &Sys, path: Option<PathBuf>) -> Files {
-        let mut f = Files { path: path.unwrap_or_else(|| PathBuf::from(&sys.us)), pager: Pager::new(64), entries: vec![],
+        let path = path.unwrap_or_else(|| PathBuf::from(&sys.us));
+        let mut f = Files { root: path.clone(), path, pager: Pager::new(64), entries: vec![],
                             hidden: false, sel: 0, menu: vec![], error: None };
         f.load();
         f
@@ -576,10 +630,13 @@ impl Files {
 }
 
 impl App for Files {
+    fn back(&mut self, sys: &mut Sys) -> Option<Cmd> {
+        (self.path != self.root && self.path.starts_with(&self.root)).then(|| self.action(ID_UP, false, sys))
+    }
+
     fn title(&self) -> String {
-        let p = self.path.to_string_lossy();
-        let chars: Vec<char> = p.chars().collect();
-        if chars.len() < 28 { p.into_owned() } else { format!("…{}", chars[chars.len() - 26..].iter().collect::<String>()) }
+        // just the folder name; the full path is shown under the toolbar
+        self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into())
     }
 
     fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
@@ -592,19 +649,23 @@ impl App for Files {
         cx.button(Rect::new(a.x1 - 150, a.y0 + 10, a.x1 - 12, a.y0 + 58), "Hidden", Some(Hit::App(ID_HIDDEN)),
                   Btn { inverted: self.hidden, ..b });
         let empty = self.error.clone().unwrap_or_else(|| "Empty folder".into());
+        let full = self.path.to_string_lossy().into_owned();
+        let shown = cx.f.ellipsize_start(&full, Face::Sans, cx.sz(14), a.w() - 32);
+        cx.text(a.x0 + 16, a.y0 + 66, &shown, 14, DARK, Anchor::LT);
         let entries = &self.entries;
-        self.pager.render(cx, Rect::new(a.x0, a.y0 + 68, a.x1, a.y1), entries.len(), &empty, |cx, r, i| {
+        self.pager.render(cx, Rect::new(a.x0, a.y0 + 88, a.x1, a.y1), entries.len(), &empty, |cx, r, i| {
             let e = &entries[i];
             cx.text(r.x0 + 20, r.cy(), if e.dir { "▸" } else { "·" }, 26, BLACK, Anchor::LM);
             let name = if e.dir { format!("{}/", e.name) } else { e.name.clone() };
             let face = if e.dir { Face::Bold } else { Face::Sans };
-            let n = cx.ellipsize(&name, face, 22, r.w() - 180);
+            let n = cx.ellipsize(&name, face, 22, r.w() - 230);
             cx.c.text(cx.f, r.x0 + 50, r.y0 + 10, &n, face, 22, BLACK, Anchor::LT);
             cx.text(r.x0 + 50, r.y0 + 38, &sys::format_time(e.mtime, "%Y-%m-%d %H:%M"), 15, DARK, Anchor::LT);
             if !e.dir {
-                cx.text(r.x1 - 20, r.cy(), &human(e.size), 16, DARK, Anchor::RM);
+                cx.text(r.x1 - 76, r.cy(), &human(e.size), 16, DARK, Anchor::RM);
             }
             cx.hit(r, Hit::App(i as u32), Some(Hit::App(0x8000_0000 | i as u32)), &e.name);
+            more_button(cx, r, 0x8000_0000 | i as u32);
         });
     }
 
@@ -746,11 +807,12 @@ impl App for Notes {
         let notes = &self.notes;
         self.pager.render(cx, Rect::new(a.x0, a.y0 + 74, a.x1, a.y1), notes.len(), "No notes yet", |cx, r, i| {
             let n = &notes[i];
-            let p = cx.ellipsize(&n.preview, Face::Bold, 22, r.w() - 40);
+            let p = cx.ellipsize(&n.preview, Face::Bold, 22, r.w() - 110);
             cx.bold(r.x0 + 20, r.y0 + 12, &p, 22, BLACK, Anchor::LT);
-            let sub = format!("{} · {}", n.name, sys::format_time(n.mtime, "%d %b %H:%M"));
+            let sub = cx.ellipsize(&format!("{} · {}", n.name, sys::format_time(n.mtime, "%d %b %H:%M")), Face::Sans, 16, r.w() - 110);
             cx.text(r.x0 + 20, r.y0 + 46, &sub, 16, DARK, Anchor::LT);
             cx.hit(r, Hit::App(i as u32), Some(Hit::App(0x8000_0000 | i as u32)), &n.preview);
+            more_button(cx, r, 0x8000_0000 | i as u32);
         });
     }
 
@@ -979,6 +1041,11 @@ impl App for Editor {
     fn on_hide(&mut self, sys: &mut Sys) {
         if self.dirty {
             self.save();
+        }
+        // a new note left empty shouldn't stay behind as "(empty)"
+        if self.path.parent() == Some(Notes::dir(sys).as_path())
+            && std::fs::metadata(&self.path).map_or(false, |m| m.len() == 0) {
+            let _ = std::fs::remove_file(&self.path);
         }
         sys.keyboard_visible = true;
     }

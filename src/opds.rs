@@ -225,11 +225,12 @@ impl App for Catalogs {
         self.pager.render(cx, Rect::new(a.x0, a.y0 + 70, a.x1, a.y1), items.len(),
                           "Add your Calibre server (http://<computer>:8080/opds) or any OPDS feed", |cx, r, i| {
             let c = &items[i];
-            let t = cx.ellipsize(&c.name, Face::Bold, 20, r.w() - 40);
+            let t = cx.ellipsize(&c.name, Face::Bold, 20, r.w() - 100);
             cx.bold(r.x0 + 18, r.y0 + 12, &t, 20, BLACK, Anchor::LT);
-            let u = cx.ellipsize(&c.url, Face::Sans, 14, r.w() - 40);
+            let u = cx.ellipsize(&c.url, Face::Sans, 14, r.w() - 100);
             cx.text(r.x0 + 18, r.y0 + 42, &u, 14, DARK, Anchor::LT);
             cx.hit(r, Hit::App(i as u32), Some(Hit::App(0x8000_0000 | i as u32)), &c.name);
+            more_button(cx, r, 0x8000_0000 | i as u32);
         });
     }
 

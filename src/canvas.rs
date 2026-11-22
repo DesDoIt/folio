@@ -180,6 +180,22 @@ impl Fonts {
         self.glyph(Face::Mono, 'M', size).advance
     }
 
+    /// Like `ellipsize`, but keeps the end of the text ("…/documents/books").
+    pub fn ellipsize_start(&mut self, s: &str, f: Face, size: u16, max_w: i32) -> String {
+        if self.width(s, f, size) <= max_w {
+            return s.to_string();
+        }
+        let mut chars: Vec<char> = s.chars().collect();
+        while !chars.is_empty() {
+            chars.remove(0);
+            let cand: String = "…".to_string() + &chars.iter().collect::<String>();
+            if self.width(&cand, f, size) <= max_w {
+                return cand;
+            }
+        }
+        "…".into()
+    }
+
     pub fn ellipsize(&mut self, s: &str, f: Face, size: u16, max_w: i32) -> String {
         if self.width(s, f, size) <= max_w {
             return s.to_string();

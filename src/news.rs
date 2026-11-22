@@ -481,16 +481,17 @@ impl News {
             let m = meta.get(u);
             let name = m.map(|m| m.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| host(u));
             let when = m.filter(|m| m.newest > 0).map(|m| relative(m.newest)).unwrap_or_default();
+            let tw = r.w() - 36 - 70; // room for the ⋯ button
             let ww = cx.sz(13) as i32 * when.chars().count() as i32 * 6 / 10 + 24;
-            let t = cx.ellipsize(&name, Face::Bold, 21, r.w() - 36 - ww);
+            let t = cx.ellipsize(&name, Face::Bold, 21, tw - ww);
             cx.bold(r.x0 + 18, r.y0 + 12, &t, 21, BLACK, Anchor::LT);
-            cx.text(r.x1 - 18, r.y0 + 16, &when, 13, DARK, Anchor::RT);
+            cx.text(r.x1 - 88, r.y0 + 16, &when, 13, DARK, Anchor::RT);
             let desc = m.map(|m| m.description.clone()).filter(|d| !d.is_empty()).unwrap_or_else(|| host(u));
-            let d = cx.ellipsize(&desc, Face::Italic, 14, r.w() - 36);
+            let d = cx.ellipsize(&desc, Face::Italic, 14, tw);
             cx.text_face(r.x0 + 18, r.y0 + 42, &d, Face::Italic, 14, DARK, Anchor::LT);
             match m {
                 Some(m) if !m.headline.is_empty() => {
-                    let h = cx.ellipsize(&format!("▸ {}", m.headline), Face::Sans, 17, r.w() - 36);
+                    let h = cx.ellipsize(&format!("▸ {}", m.headline), Face::Sans, 17, tw);
                     cx.text(r.x0 + 18, r.y0 + 64, &h, 17, BLACK, Anchor::LT);
                     let state = if m.error { " · couldn't refresh".to_string() } else { String::new() };
                     cx.text(r.x0 + 18, r.y0 + 92, &format!("{} stories{state}", m.count), 13, DARK, Anchor::LT);
@@ -501,6 +502,7 @@ impl News {
                 }
             }
             cx.hit(r, Hit::App(i as u32), Some(Hit::App(0x8000_0000 | i as u32)), &name);
+            more_button(cx, r, 0x8000_0000 | i as u32);
         });
     }
 
@@ -580,6 +582,13 @@ impl App for News {
         "News".into()
     }
 
+    fn back(&mut self, _sys: &mut Sys) -> Option<Cmd> {
+        self.feed.take().map(|_| {
+            self.pager = Pager::new(FEED_ROW);
+            Cmd::Full
+        })
+    }
+
     fn on_show(&mut self, _sys: &mut Sys) {
         let stale = self.last_refresh.map_or(true, |t| t.elapsed().as_secs() > 15 * 60);
         if self.feed.is_none() && stale {
@@ -590,7 +599,6 @@ impl App for News {
     fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
         let b = Btn::size(19);
         if self.feed.is_some() {
-            cx.button(Rect::new(a.x0 + 12, a.y0 + 8, a.x0 + 190, a.y0 + 56), "◀ All feeds", Some(Hit::App(ID_BACK)), b);
             cx.button(Rect::new(a.x1 - 170, a.y0 + 8, a.x1 - 12, a.y0 + 56), "Refresh", Some(Hit::App(ID_REFRESH)), b);
             self.render_feed(cx, a);
         } else {

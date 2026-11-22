@@ -227,8 +227,12 @@ impl App for SendApp {
             return;
         }
         let ip = sys::ip_address(sys.sim);
-        cx.text(a.x0 + 24, y, "On your phone or computer, connected to the same Wi-Fi, open:", 18, DARK, Anchor::LT);
-        y += 40;
+        let sz = cx.sz(18);
+        for l in cx.f.wrap("On your phone or computer, connected to the same Wi-Fi, open:", Face::Sans, sz, a.w() - 48) {
+            cx.text(a.x0 + 24, y, &l, 18, DARK, Anchor::LT);
+            y += sz as i32 + 8;
+        }
+        y += 12;
         let url = match &ip {
             Some(ip) => format!("http://{ip}:{PORT}"),
             None => "Connect Wi-Fi first".into(),

@@ -356,6 +356,8 @@ pub struct Reader {
     define_job: Option<Arc<Mutex<Option<Result<String, String>>>>>,
     last_turn: std::time::Instant,
     menu: Vec<MenuAct>,
+    /// The on-screen toolbar (back, home, chapters…), shown by tapping the top of the page.
+    toolbar: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -369,7 +371,6 @@ enum MenuAct {
     SaveForLater,
     KOReader,
     Library,
-    Close,
 }
 
 const ID_WORD: u32 = 4;
@@ -382,6 +383,13 @@ const ID_LINK: u32 = 0x4000_0000;
 const ID_PREV: u32 = 1;
 const ID_NEXT: u32 = 2;
 const ID_MENU: u32 = 3;
+const ID_BAR: u32 = 5; // show/hide the toolbar
+const ID_BAR_CHAPTERS: u32 = 6;
+const ID_BAR_BOOKMARK: u32 = 7;
+const ID_BAR_SEARCH: u32 = 8;
+const ID_BAR_FONT: u32 = 9;
+const BAR_TOP_H: i32 = 64;
+const BAR_BOTTOM_H: i32 = 118;
 const TAG_MENU: u32 = 1;
 const TAG_FONT: u32 = 2;
 
@@ -399,7 +407,14 @@ impl Reader {
                  want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), sync_pull: None, sync_offer: None, synced_once: false, links: vec![],
                  link_boxes: vec![], note_target: None, save_html: None,
                  words: vec![], sel_word: None, define_job: None, last_turn: std::time::Instant::now(),
-                 menu: vec![] }
+                 menu: vec![], toolbar: false }
+    }
+
+    /// Run one menu action directly (from the toolbar buttons).
+    fn do_act(&mut self, act: MenuAct, sys: &mut Sys) -> Cmd {
+        self.toolbar = false;
+        self.menu = vec![act];
+        self.dialog(TAG_MENU, 0, String::new(), sys)
     }
 
     /// Go to a chapter and character offset.
@@ -609,6 +624,7 @@ impl Reader {
     }
 
     fn next(&mut self, sys: &Sys) -> Cmd {
+        self.toolbar = false;
         if self.page + 1 < self.pages.len() {
             self.page += 1;
         } else if self.chapter + 1 < self.book.spine.len() {
@@ -625,6 +641,7 @@ impl Reader {
     }
 
     fn prev(&mut self, sys: &Sys) -> Cmd {
+        self.toolbar = false;
         if self.page > 0 {
             self.page -= 1;
         } else if self.chapter > 0 {
@@ -653,6 +670,47 @@ impl Reader {
         let n = self.book.spine.len().max(1) as f32;
         let within = if self.pages.len() > 1 { self.page as f32 / self.pages.len() as f32 } else { 0.0 };
         (((self.chapter as f32 + within) / n) * 100.0) as u32
+    }
+}
+
+impl Reader {
+    fn render_toolbar(&mut self, cx: &mut Ctx, a: Rect, sys: &Sys) {
+        // anywhere outside the bars closes the toolbar
+        cx.hit(a, Hit::App(ID_BAR), Some(Hit::App(ID_BAR)), "close toolbar");
+        let b = Btn::size(20);
+        // top: back, home, title, text size, full menu
+        let top = Rect::new(a.x0, a.y0, a.x1, a.y0 + BAR_TOP_H);
+        cx.c.fill(top, WHITE);
+        cx.c.hline(a.x0, a.x1, top.y1 - 2, 2, BLACK);
+        cx.button(Rect::new(6, top.y0 + 6, 70, top.y1 - 8), "‹", Some(Hit::Back), b);
+        cx.button(Rect::new(76, top.y0 + 6, 140, top.y1 - 8), "⌂", Some(Hit::Home), Btn { size: 24, ..b });
+        cx.button(Rect::new(a.x1 - 134, top.y0 + 6, a.x1 - 72, top.y1 - 8), "Aa", Some(Hit::App(ID_BAR_FONT)), b);
+        cx.button(Rect::new(a.x1 - 66, top.y0 + 6, a.x1 - 6, top.y1 - 8), "☰", Some(Hit::App(ID_MENU)), Btn { size: 24, ..b });
+        let t = cx.ellipsize(&self.book.title, Face::Bold, 20, a.w() - 152 - 146);
+        cx.bold(152, top.cy() - 2, &t, 20, BLACK, Anchor::LM);
+        // bottom: where you are, and the common actions
+        let bot = Rect::new(a.x0, a.y1 - BAR_BOTTOM_H, a.x1, a.y1);
+        cx.c.fill(bot, WHITE);
+        cx.c.hline(a.x0, a.x1, bot.y0, 2, BLACK);
+        let right = format!("{} / {}  ·  {}%", self.page + 1, self.pages.len().max(1), self.progress());
+        let rw = cx.text(a.x1 - 16, bot.y0 + 20, &right, 15, DARK, Anchor::RM);
+        let ch = self.book.chapter_title(self.chapter);
+        let ch = cx.ellipsize(&ch, Face::Bold, 16, a.w() - 48 - rw);
+        cx.bold(a.x0 + 16, bot.y0 + 20, &ch, 16, BLACK, Anchor::LM);
+        let bar = Rect::new(a.x0 + 16, bot.y0 + 36, a.x1 - 16, bot.y0 + 44);
+        cx.c.round_rect(bar, 4, WHITE, 1, BLACK);
+        let w = (bar.w() - 2) * (self.progress() as i32).min(100) / 100;
+        if w > 0 {
+            cx.c.fill(Rect::new(bar.x0 + 1, bar.y0 + 1, bar.x0 + 1 + w, bar.y1 - 1), BLACK);
+        }
+        let marked = self.is_bookmarked(sys);
+        let labels = [("Chapters", ID_BAR_CHAPTERS), (if marked { "★ Marked" } else { "☆ Bookmark" }, ID_BAR_BOOKMARK),
+                      ("Search", ID_BAR_SEARCH)];
+        let bw = (a.w() - 16 - 8 * (labels.len() as i32 - 1)) / labels.len() as i32;
+        for (k, (l, id)) in labels.iter().enumerate() {
+            let x = a.x0 + 8 + k as i32 * (bw + 8);
+            cx.button(Rect::new(x, bot.y0 + 56, x + bw, bot.y1 - 10), l, Some(Hit::App(*id)), b);
+        }
     }
 }
 
@@ -718,11 +776,15 @@ impl App for Reader {
         let t = self.book.chapter_title(self.chapter);
         let t = cx.ellipsize(&t, Face::Sans, 15, a.w() - 2 * MARGIN_X - rw - 20);
         cx.text(a.x0 + MARGIN_X, fy, &t, 15, DARK, Anchor::LM);
-        // tap zones: left third = back, top-middle = menu, everything else = forward
+        if self.toolbar {
+            self.render_toolbar(cx, a, sys);
+            return;
+        }
+        // tap zones: top strip = toolbar, left third = back, everything else = forward
         let third = a.w() / 3;
         cx.hit(Rect::new(a.x0, a.y0, a.x1, a.y1), Hit::App(ID_NEXT), Some(Hit::App(ID_WORD)), "next page");
         cx.hit(Rect::new(a.x0, a.y0, a.x0 + third, a.y1), Hit::App(ID_PREV), Some(Hit::App(ID_WORD)), "previous page");
-        cx.hit(Rect::new(a.x0 + third, a.y0, a.x1 - third, a.y0 + a.h() / 6), Hit::App(ID_MENU), None, "menu");
+        cx.hit(Rect::new(a.x0, a.y0, a.x1, a.y0 + a.h() / 7), Hit::App(ID_BAR), Some(Hit::App(ID_BAR)), "toolbar");
         for (r, l) in &self.link_boxes {
             // small note markers are hard to hit: give them at least 44 px
             let pad_x = ((44 - r.w()) / 2).max(0);
@@ -737,7 +799,20 @@ impl App for Reader {
             l if l & ID_LINK != 0 => self.follow_link((l & !ID_LINK) as usize),
             ID_NEXT => self.next(sys),
             ID_PREV => self.prev(sys),
+            ID_BAR => {
+                self.toolbar = !self.toolbar;
+                if self.toolbar { Cmd::Fast } else { Cmd::Redraw }
+            }
+            ID_BAR_CHAPTERS => self.do_act(MenuAct::Chapters, sys),
+            ID_BAR_BOOKMARK => {
+                let c = self.do_act(MenuAct::Bookmark, sys);
+                self.toolbar = true; // keep the bar so the star change is visible
+                c
+            }
+            ID_BAR_SEARCH => self.do_act(MenuAct::Search, sys),
+            ID_BAR_FONT => self.do_act(MenuAct::FontSize, sys),
             ID_MENU => {
+                self.toolbar = false;
                 self.menu = vec![MenuAct::Chapters, MenuAct::Bookmark, MenuAct::Bookmarks, MenuAct::Search,
                                  MenuAct::FontSize, MenuAct::Layout];
                 // in-memory articles can be saved; real book files can be opened in KOReader instead
@@ -746,7 +821,7 @@ impl App for Reader {
                 } else if std::path::Path::new(&self.path).is_file() {
                     self.menu.push(MenuAct::KOReader);
                 }
-                self.menu.extend([MenuAct::Library, MenuAct::Close]);
+                self.menu.push(MenuAct::Library);
                 let marked = self.is_bookmarked(sys);
                 let nbm = self.bookmarks(sys).len();
                 let items: Vec<String> = self.menu.iter().map(|m| match m {
@@ -760,7 +835,6 @@ impl App for Reader {
                     MenuAct::SaveForLater => "Save for later",
                     MenuAct::KOReader => "Open in KOReader",
                     MenuAct::Library => "Back to library",
-                    MenuAct::Close => "Close menu",
                     _ => "",
                     }.to_string(),
                 }).collect();
@@ -778,7 +852,10 @@ impl App for Reader {
                         Cmd::Dialog(Dialog::menu(TAG_WORD, &format!("“{word}”"),
                             vec![format!("Define “{word}”"), "Highlight sentence".into(), "Cancel".into()]))
                     }
-                    None => self.action(ID_MENU, false, sys),
+                    None => {
+                        self.toolbar = true;
+                        Cmd::Fast
+                    }
                 }
             }
             _ => Cmd::None,
@@ -838,7 +915,7 @@ impl App for Reader {
                 }
                 Some(MenuAct::Layout) => self.layout_menu(),
                 Some(MenuAct::Library) => Cmd::Pop,
-                Some(MenuAct::Close) | None => Cmd::Full,
+                None => Cmd::Full,
             },
             (TAG_FONT, i) => {
                 if let Some(&s) = FONT_SIZES.get(i) {
@@ -953,6 +1030,12 @@ impl App for Reader {
     fn on_show(&mut self, sys: &mut Sys) {
         if self.sync_pull.is_none() && self.sync_offer.is_none() && !self.synced_once {
             self.synced_once = true;
+            // show the toolbar on the first few books, so people learn where it lives
+            let seen: u32 = sys.config.get("reader_bar_hint").parse().unwrap_or(0);
+            if seen < 3 {
+                sys.config.set("reader_bar_hint", &(seen + 1).to_string());
+                self.toolbar = true;
+            }
             self.start_sync_pull(sys);
         }
         let picked = self.pick.lock().unwrap().take();

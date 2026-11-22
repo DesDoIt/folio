@@ -307,6 +307,7 @@ const T_SEARCH: u32 = 1;
 const T_DOWNLOAD: u32 = 2;
 const T_LINK: u32 = 3;
 const T_READ: u32 = 4;
+const T_RETRY: u32 = 6;
 const T_MORE: u32 = 5;
 
 impl GetBooks {
@@ -439,7 +440,8 @@ impl App for GetBooks {
                         Ok(()) => {
                             self.last_path = Some(d.dest.clone());
                             let name = std::path::Path::new(&d.dest).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                            Cmd::Dialog(Dialog::confirm(T_READ, "Downloaded", &format!("{name} is in your library."), "Read now"))
+                            Cmd::Dialog(Dialog::confirm(T_READ, "Downloaded", &format!("{name} is in your library."), "Read now")
+                                .with_cancel("Keep browsing"))
                         }
                         Err(e) => Cmd::Dialog(Dialog::message("Download failed", &format!("{}\n{e}", d.title))),
                     });
@@ -478,7 +480,8 @@ impl App for GetBooks {
                 self.items = items;
                 Cmd::Redraw
             }
-            Job::List(Err(e)) => Cmd::Batch(vec![Cmd::Redraw, Cmd::Dialog(Dialog::message("Couldn't load books", &e))]),
+            Job::List(Err(e)) => Cmd::Batch(vec![Cmd::Redraw,
+                Cmd::Dialog(Dialog::confirm(T_RETRY, "Couldn't load books", &e, "Try again"))]),
         };
         let _ = sys;
         cmds.insert(0, done);
@@ -555,6 +558,10 @@ impl App for GetBooks {
                 _ => Cmd::Dialog(Dialog::input(T_LINK, "Download from link", "https://", "Download")
                     .with_message("Direct link to an .epub file")),
             },
+            T_RETRY => {
+                self.load();
+                Cmd::Redraw
+            }
             T_READ => match self.last_path.clone() {
                 Some(p) => open_book(sys, &p),
                 None => Cmd::None,

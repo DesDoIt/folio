@@ -337,6 +337,10 @@ impl Web {
 }
 
 impl App for Web {
+    fn back(&mut self, sys: &mut Sys) -> Option<Cmd> {
+        if self.history.is_empty() { None } else { Some(self.action(ID_BACK, false, sys)) }
+    }
+
     fn title(&self) -> String {
         "Web".into()
     }
@@ -366,8 +370,10 @@ impl App for Web {
             self.laid_out = Some((content, self.fs));
         }
         // page turning: whole content area swipes; links are registered on top
-        cx.hit(content, Hit::App(ID_NEXT), None, "content");
-        cx.hit(Rect::new(content.x0, content.y0, content.x0 + content.w() / 3, content.y1), Hit::App(ID_PREV), None, "content-left");
+        // page turns only from the outer edges, so a slightly missed link doesn't flip the page
+        let edge = content.w() * 15 / 100;
+        cx.hit(Rect::new(content.x1 - edge, content.y0, content.x1, content.y1), Hit::App(ID_NEXT), None, "content");
+        cx.hit(Rect::new(content.x0, content.y0, content.x0 + edge, content.y1), Hit::App(ID_PREV), None, "content-left");
         self.link_boxes = match self.pages.get(self.page) {
             Some(p) => draw_page(cx, p).links,
             None => vec![],
@@ -437,7 +443,7 @@ impl App for Web {
                 match moved {
                     Ok(()) => {
                         self.saved_book = Some(dest);
-                        Cmd::Dialog(Dialog::confirm(T_READ, "Saved to your library", &name, "Read now"))
+                        Cmd::Dialog(Dialog::confirm(T_READ, "Saved to your library", &name, "Read now").with_cancel("Keep browsing"))
                     }
                     Err(e) => Cmd::Dialog(Dialog::message("Couldn't save the book", &e.to_string())),
                 }

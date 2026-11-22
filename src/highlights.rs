@@ -189,14 +189,15 @@ impl App for HighlightsApp {
         self.pager.render(cx, Rect::new(a.x0, a.y0 + 70, a.x1, a.y1), items.len(),
                           "No highlights yet. Long-press a word while reading.", |cx, r, i| {
             let h = &items[i];
-            let lines = cx.f.wrap(&format!("“{}”", h.text), Face::Sans, 17, r.w() - 40);
+            let lines = cx.f.wrap(&format!("“{}”", h.text), Face::Sans, cx.sz(17), r.w() - 100);
             for (k, l) in lines.iter().take(3).enumerate() {
                 let l = if k == 2 && lines.len() > 3 { format!("{l}…") } else { l.clone() };
                 cx.text(r.x0 + 20, r.y0 + 10 + k as i32 * 24, &l, 17, BLACK, Anchor::LT);
             }
-            let src = cx.ellipsize(&format!("{}  ·  {}", h.book, h.date), Face::Sans, 14, r.w() - 40);
+            let src = cx.ellipsize(&format!("{}  ·  {}", h.book, h.date), Face::Sans, 14, r.w() - 100);
             cx.text(r.x0 + 20, r.y1 - 24, &src, 14, DARK, Anchor::LT);
             cx.hit(r, Hit::App(i as u32), Some(Hit::App(0x8000_0000 | i as u32)), &h.text);
+            more_button(cx, r, 0x8000_0000 | i as u32);
         });
     }
 

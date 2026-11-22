@@ -458,7 +458,7 @@ impl App for Terminal {
         let cw = cx.f.mono_advance(self.fs);
         let lh = self.fs as i32 + 5;
         let cols = (((a.w() - 12) as f32 / cw) as usize).max(20);
-        let rows = (((a.h() - 50) / lh) as usize).max(5);
+        let rows = (((a.h() - 60) / lh) as usize).max(5);
         if self.grid.is_none() && !self.exited {
             self.spawn(cols, rows);
         } else if let Some(g) = self.grid.as_mut() {
@@ -468,12 +468,12 @@ impl App for Terminal {
             }
         }
         let b = Btn::size(18);
-        cx.button(Rect::new(a.x0 + 8, a.y0 + 6, a.x0 + 70, a.y0 + 42), "A−", Some(Hit::App(ID_SMALLER)), b);
-        cx.button(Rect::new(a.x0 + 76, a.y0 + 6, a.x0 + 138, a.y0 + 42), "A+", Some(Hit::App(ID_BIGGER)), b);
-        cx.button(Rect::new(a.x0 + 144, a.y0 + 6, a.x0 + 280, a.y0 + 42), "Keyboard", Some(Hit::App(ID_KB)), b);
-        cx.button(Rect::new(a.x0 + 286, a.y0 + 6, a.x0 + 380, a.y0 + 42), "Ctrl-C", Some(Hit::App(ID_CTRLC)), b);
-        cx.text(a.x1 - 10, a.y0 + 24, &format!("{cols}×{rows}"), 15, DARK, Anchor::RM);
-        let (tx, ty) = (a.x0 + 6, a.y0 + 48);
+        cx.button(Rect::new(a.x0 + 8, a.y0 + 4, a.x0 + 76, a.y0 + 52), "A−", Some(Hit::App(ID_SMALLER)), b);
+        cx.button(Rect::new(a.x0 + 82, a.y0 + 4, a.x0 + 150, a.y0 + 52), "A+", Some(Hit::App(ID_BIGGER)), b);
+        cx.button(Rect::new(a.x0 + 156, a.y0 + 4, a.x0 + 290, a.y0 + 52), "Keyboard", Some(Hit::App(ID_KB)), b);
+        cx.button(Rect::new(a.x0 + 296, a.y0 + 4, a.x0 + 396, a.y0 + 52), "Ctrl-C", Some(Hit::App(ID_CTRLC)), b);
+        cx.text(a.x1 - 10, a.y0 + 28, &format!("{cols}×{rows}"), 15, DARK, Anchor::RM);
+        let (tx, ty) = (a.x0 + 6, a.y0 + 58);
         if let Some(g) = &self.grid {
             for r in 0..g.rows {
                 let y = ty + r as i32 * lh;

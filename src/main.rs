@@ -515,6 +515,20 @@ impl SimRun {
         }
     }
     /// Close an error/info dialog if one is showing (external services can be down).
+    /// Open the reader's full menu (via its toolbar).
+    fn menu(&mut self) {
+        if self.m.ui.find_label("☰").is_none() {
+            self.tap("toolbar");
+        }
+        self.tap("☰");
+    }
+    /// Leave the reader with the toolbar's back button.
+    fn close_reader(&mut self) {
+        if self.m.ui.find_label("☰").is_none() {
+            self.tap("toolbar");
+        }
+        self.tap("‹");
+    }
     fn dismiss(&mut self) {
         if self.m.ui.find_label("OK").is_some() {
             println!("note: dismissed a dialog (service unavailable?)");
@@ -581,7 +595,8 @@ fn sim_main(out: &str) -> i32 {
     let us = sys::userstore(true);
     make_userstore(&us);
     let mut s = SimRun { m: Main::new(true, 600, 800), disp: fb::Sim::new(600, 800, out), n: 0 };
-    s.m.sys.config.set("books_view", "list"); // the script taps books by name; the cover view gets its own shots
+    s.m.sys.config.set("books_view", "list");
+    s.m.sys.config.set("reader_bar_hint", "3"); // keep page screenshots clean; the toolbar gets its own shot // the script taps books by name; the cover view gets its own shots
     s.shot("home");
     s.tap("Books");
     s.shot("books");
@@ -602,6 +617,9 @@ fn sim_main(out: &str) -> i32 {
     s.settle(300);
     s.shot("wifi");
     s.tap("HomeNetwork");
+    s.shot("wifi-connected");
+    s.tap("Cancel");
+    s.tap("Neighbour 5G");
     s.typ("secret");
     s.shot("wifi-password");
     s.tap("Cancel");
@@ -625,13 +643,13 @@ fn sim_main(out: &str) -> i32 {
     s.shot("setup-done");
     s.settle(3100);
     s.m.ui.expire_toast();
-    s.tap("◀ Back");
-    s.tap("◀ Back");
+    s.tap("◀ Prev");
+    s.tap("◀ Prev");
     s.shot("settings");
     s.tap("Next ▶");
     s.shot("settings-page2");
     s.tap("Menu text size");
-    s.tap("◀ Back");
+    s.tap("◀ Prev");
     s.shot("settings-large");
     s.tap("⌂");
     s.shot("home-large");
@@ -667,18 +685,19 @@ fn sim_main(out: &str) -> i32 {
         s.tap("next page");
     }
     s.shot("reader-later");
-    s.tap("menu");
+    s.tap("toolbar");
+    s.shot("reader-toolbar");
+    s.tap("☰");
     s.shot("reader-menu");
     s.tap("Chapters");
     s.shot("reader-chapters");
     s.tap("Chapter Two: The Road North");
     s.shot("reader-chapter2");
-    s.tap("menu");
+    s.menu();
     s.tap("Font size");
     s.tap("28 px");
     s.shot("reader-font28");
-    s.tap("menu");
-    s.tap("Back to library");
+    s.close_reader();
     s.tap("⌂");
     // Get Books: live network (popular Gutenberg list, Standard Ebooks, a search and a real download)
     s.tap("Get Books");
@@ -710,8 +729,7 @@ fn sim_main(out: &str) -> i32 {
         if s.m.ui.find_label("Read now").is_some() {
             s.tap("Read now");
             s.shot("getbooks-reading");
-            s.tap("menu");
-            s.tap("Back to library");
+            s.close_reader();
         }
     }
     s.tap("⌂");
@@ -792,24 +810,23 @@ fn sim_main(out: &str) -> i32 {
         }
         s.tap("next page");
         s.shot("reader-image");
-        s.tap("menu");
+        s.menu();
         s.tap("Bookmark this page");
-        s.tap("menu");
+        s.menu();
         s.tap("Search in book");
         s.typ("lanterns");
         s.tap("Search");
         s.shot("reader-search");
         s.tap("‹");
-        s.tap("menu");
+        s.menu();
         s.tap("Bookmarks");
         s.shot("reader-bookmarks");
         s.tap("‹");
-        s.tap("menu");
+        s.menu();
         s.tap("Layout");
         s.shot("reader-layout");
         s.tap("Done");
-        s.tap("menu");
-        s.tap("Back to library");
+        s.close_reader();
         let tm = format!("{us}/documents/The Time Machine - H. G. Wells.epub");
         if std::path::Path::new(&tm).exists() {
             let r = reader::Reader::open(&tm, &s.m.sys).expect("time machine");
@@ -819,8 +836,7 @@ fn sim_main(out: &str) -> i32 {
                 s.tap("next page");
             }
             s.shot("reader-real-text");
-            s.tap("menu");
-            s.tap("Back to library");
+            s.close_reader();
         }
     }
     // --- a real DRM-free AZW3 (KF8) from Standard Ebooks ---
@@ -838,12 +854,11 @@ fn sim_main(out: &str) -> i32 {
                         s.tap("next page");
                     }
                     s.shot("reader-azw3");
-                    s.tap("menu");
+                    s.menu();
                     s.tap("Chapters");
                     s.shot("reader-azw3-chapters");
                     s.tap("‹");
-                    s.tap("menu");
-                    s.tap("Back to library");
+                    s.close_reader();
                 }
                 Err(e) => println!("azw3 open failed: {e}"),
             }
@@ -898,8 +913,7 @@ fn sim_main(out: &str) -> i32 {
     if s.m.ui.find_label("Highlight sentence").is_some() {
         s.tap("Highlight sentence");
     }
-    s.tap("menu");
-    s.tap("Back to library");
+    s.close_reader();
     s.tap("Highlights");
     s.shot("highlights");
     s.tap("⌂");
@@ -927,9 +941,8 @@ fn sim_main(out: &str) -> i32 {
         s.wait_idle(60);
         s.dismiss();
         s.shot("news-article");
-        if s.m.ui.find_label("menu").is_some() {
-            s.tap("menu");
-            s.tap("Back to library");
+        if s.m.ui.find_label("toolbar").is_some() {
+            s.close_reader();
         }
     }
     s.tap("⌂");
@@ -946,12 +959,11 @@ fn sim_main(out: &str) -> i32 {
         s.wait_idle(60);
         s.dismiss();
         s.shot("wiki-article");
-        s.tap("menu");
+        s.menu();
         s.tap("Chapters");
         s.shot("wiki-sections");
         s.tap("‹");
-        s.tap("menu");
-        s.tap("Back to library");
+        s.close_reader();
     }
     s.tap("⌂");
     // Games

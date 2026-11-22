@@ -49,8 +49,9 @@ impl App for GamesApp {
 
     fn action(&mut self, id: u32, _long: bool, _sys: &mut Sys) -> Cmd {
         match id {
-            0 => Cmd::Push(Box::new(Sudoku::new(1))),
-            1 => Cmd::Push(Box::new(Chess::new())),
+            // games keep running in the background: leaving and coming back resumes them
+            0 => Cmd::Resume("sudoku", |_| Box::new(Sudoku::new(1))),
+            1 => Cmd::Resume("chess", |_| Box::new(Chess::new())),
             _ => Cmd::None,
         }
     }
@@ -151,11 +152,16 @@ impl Sudoku {
         for i in 0..81 {
             given[i] = puzzle[i] != 0;
         }
-        Sudoku { solution: sol, given, cells: puzzle, sel: None, wrong: [false; 81], level, started: Instant::now(), solved: None }
+        let sel = puzzle.iter().position(|v| *v == 0); // start with the first empty cell selected
+        Sudoku { solution: sol, given, cells: puzzle, sel, wrong: [false; 81], level, started: Instant::now(), solved: None }
     }
 }
 
 impl App for Sudoku {
+    fn persistent_key(&self) -> Option<&'static str> {
+        Some("sudoku")
+    }
+
     fn title(&self) -> String {
         format!("Sudoku · {}", LEVELS[self.level].0)
     }
@@ -233,6 +239,9 @@ impl App for Sudoku {
             }
             SU_NEW => Cmd::Dialog(Dialog::menu(T_LEVEL, "New game", LEVELS.iter().map(|l| l.0.to_string()).collect())),
             n if n > SU_NUM && n <= SU_NUM + 9 => {
+                if self.sel.is_none() {
+                    return Cmd::Toast("Tap an empty square first".into());
+                }
                 if let Some(i) = self.sel {
                     self.cells[i] = (n - SU_NUM) as u8;
                     self.wrong[i] = false;
@@ -590,7 +599,21 @@ fn glyph(p: i8) -> &'static str {
     }
 }
 
+const T_CH_NEW: u32 = 1;
+
 impl App for Chess {
+    fn persistent_key(&self) -> Option<&'static str> {
+        Some("chess")
+    }
+
+    fn dialog(&mut self, tag: u32, choice: usize, _t: String, _sys: &mut Sys) -> Cmd {
+        if tag == T_CH_NEW && choice != CANCEL {
+            *self = Chess::new();
+            return Cmd::Full;
+        }
+        Cmd::None
+    }
+
     fn title(&self) -> String {
         "Chess".into()
     }
@@ -652,6 +675,9 @@ impl App for Chess {
             return Cmd::None;
         }
         match id {
+            CH_NEW if !self.history.is_empty() => {
+                Cmd::Dialog(Dialog::confirm(T_CH_NEW, "Start a new game?", "The current game will be lost.", "New game"))
+            }
             CH_NEW => {
                 *self = Chess::new();
                 Cmd::Full

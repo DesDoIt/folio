@@ -17,7 +17,7 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 
 | | | |
 |:-:|:-:|:-:|
-| <img src="docs/screenshots/home.png" width="240" alt="Home screen"><br>Home | <img src="docs/screenshots/reader.png" width="240" alt="Built-in reader"><br>Reader | <img src="docs/screenshots/word-menu.png" width="240" alt="Long-press a word"><br>Define / highlight |
+| <img src="docs/screenshots/home.png" width="240" alt="Home screen"><br>Home | <img src="docs/screenshots/reader.png" width="240" alt="Built-in reader"><br>Reader | <img src="docs/screenshots/reader-toolbar.png" width="240" alt="Reader toolbar"><br>Reader toolbar |
 | <img src="docs/screenshots/get-books.png" width="240" alt="Get Books"><br>Get Books | <img src="docs/screenshots/books.png" width="240" alt="Library"><br>Library | <img src="docs/screenshots/books-list.png" width="240" alt="Library as a list"><br>Library (list) |
 | <img src="docs/screenshots/get-books-progress.png" width="240" alt="Download progress"><br>Downloading | <img src="docs/screenshots/news-feeds.png" width="240" alt="News front page"><br>News front page | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
 | <img src="docs/screenshots/news.png" width="240" alt="News feed"><br>News | <img src="docs/screenshots/news-article.png" width="240" alt="News article"><br>Article | <img src="docs/screenshots/wikipedia.png" width="240" alt="Wikipedia article"><br>Wikipedia |
@@ -32,7 +32,7 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 
 **Reading**
 - **Reader**: built-in, for EPUB, DRM-free MOBI/AZW3, TXT and saved web pages: full-screen pages, tap or
-  swipe to turn, chapters, bookmarks, search, footnote pop-ups, images, italics, hyphenation, font size,
+  swipe to turn, tap the top of the page for a toolbar (back, home, chapters, bookmark, search, text size), chapters, bookmarks, search, footnote pop-ups, images, italics, hyphenation, font size,
   margins and line spacing; position saved per book. Long-press a word to **define** it (English, online)
   or **highlight** its sentence
 - **Books**: your library as a cover shelf (real covers from EPUB/MOBI/AZW3, reading progress under each) or a
