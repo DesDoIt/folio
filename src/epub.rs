@@ -518,6 +518,8 @@ pub struct Book {
     zip: Option<Zip>,
     text: Option<String>,
     mem: Option<Vec<Vec<Block>>>,
+    /// zip path of the cover image, if the EPUB declares one
+    cover: Option<String>,
 }
 
 fn dir_of(p: &str) -> String {
@@ -581,7 +583,7 @@ impl Book {
         let toc = chapters.iter().enumerate().map(|(i, (t, _))| Chapter { title: t.clone(), spine: i }).collect();
         let spine = (0..chapters.len()).map(|i| format!("mem{i}")).collect();
         let mem = Some(chapters.into_iter().map(|(_, b)| b).collect());
-        Book { title: title.into(), author: author.into(), spine, toc, zip: None, text: None, mem }
+        Book { title: title.into(), author: author.into(), spine, toc, zip: None, text: None, mem, cover: None }
     }
 
     pub fn open(path: &str) -> Result<Book, String> {
@@ -601,7 +603,7 @@ impl Book {
                 .unwrap_or_else(|_| bytes.iter().map(|&b| b as char).collect()); // latin-1 fallback
             let title = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             return Ok(Book { title, author: String::new(), spine: vec!["text".into()],
-                             toc: vec![Chapter { title: "Text".into(), spine: 0 }], zip: None, text: Some(text), mem: None });
+                             toc: vec![Chapter { title: "Text".into(), spine: 0 }], zip: None, text: Some(text), mem: None, cover: None });
         }
         let mut zip = Zip::open(path)?;
         let container = zip.read_string("META-INF/container.xml").ok_or("missing META-INF/container.xml")?;
@@ -617,6 +619,7 @@ impl Book {
         let mut manifest: HashMap<String, (String, String, String)> = HashMap::new(); // id -> (path, media, props)
         let mut spine_ids = vec![];
         let mut ncx_id = None;
+        let mut cover_id = None;
         for t in &toks {
             if let Tok::Open(n, a, _) = t {
                 match n.as_str() {
@@ -634,11 +637,16 @@ impl Book {
                         }
                     }
                     "spine" => ncx_id = a.get("toc").cloned(),
+                    "meta" if a.get("name").map(String::as_str) == Some("cover") => cover_id = a.get("content").cloned(),
                     _ => {}
                 }
             }
         }
         let spine: Vec<String> = spine_ids.iter().filter_map(|id| manifest.get(id).map(|m| m.0.clone())).collect();
+        // cover: EPUB3 properties="cover-image", else EPUB2 <meta name="cover" content="id">
+        let cover = manifest.values().find(|m| m.2.split_whitespace().any(|p| p == "cover-image")).map(|m| m.0.clone())
+            .or_else(|| cover_id.and_then(|id| manifest.get(&id).map(|m| m.0.clone())))
+            .filter(|p| { let l = p.to_lowercase(); l.ends_with(".jpg") || l.ends_with(".jpeg") || l.ends_with(".png") });
         if spine.is_empty() {
             return Err("EPUB has no readable chapters".into());
         }
@@ -708,7 +716,7 @@ impl Book {
         if toc.is_empty() {
             toc = (0..spine.len()).map(|i| Chapter { title: format!("Section {}", i + 1), spine: i }).collect();
         }
-        Ok(Book { title, author, spine, toc, zip: Some(zip), text: None, mem: None })
+        Ok(Book { title, author, spine, toc, zip: Some(zip), text: None, mem: None, cover })
     }
 
     pub fn chapter_blocks(&mut self, i: usize) -> Vec<Block> {
@@ -723,6 +731,12 @@ impl Book {
             Some(html) => html_to_blocks(&html),
             None => vec![Block { kind: BlockKind::Para, runs: vec![Run { text: format!("(Could not read {path})"), bold: false, link: None }], start: 0 }],
         }
+    }
+
+    /// The cover image bytes (JPEG/PNG), if any.
+    pub fn cover_image(&mut self) -> Option<Vec<u8>> {
+        let path = self.cover.clone()?;
+        self.zip.as_mut()?.read(&path)
     }
 
     /// Title of the TOC entry covering spine item `i`.

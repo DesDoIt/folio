@@ -72,12 +72,21 @@ pub fn geocode(name: &str) -> Result<(f64, f64, String), String> {
     Ok((lat, lon, label))
 }
 
-pub fn fetch_weather(lat: f64, lon: f64, place: &str) -> Result<Weather, String> {
+pub fn fetch_weather(lat: f64, lon: f64, place: &str) -> Result<(Weather, String), String> {
     let url = format!("https://api.open-meteo.com/v1/forecast?latitude={lat:.4}&longitude={lon:.4}\
         &current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m\
         &daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset\
         &timezone=auto&forecast_days=5");
-    let j = json::parse(&http_get(&url)?).map_err(|e| e.to_string())?;
+    let body = http_get(&url)?;
+    Ok((parse_weather(&body, place)?, body))
+}
+
+/// Parse an Open-Meteo forecast response.
+pub fn parse_weather(body: &str, place: &str) -> Result<Weather, String> {
+    let j = json::parse(body).map_err(|e| e.to_string())?;
+    if j.get("current").get("temperature_2m").num().is_none() {
+        return Err("unexpected weather data".into());
+    }
     let cur = j.get("current");
     let d = j.get("daily");
     let num = |k: &str, i: usize| d.get(k).arr().get(i).and_then(|v| v.num()).unwrap_or(0.0);
@@ -122,14 +131,31 @@ fn weekday_of(date: &str) -> String {
     sys::format_time(t, "%a")
 }
 
-/// Refresh the weather (blocking; run on a thread).
-pub fn refresh(loc: (f64, f64, String)) -> Dash {
-    let mut d = Dash { updated: Some(now()), ..Default::default() };
+/// Refresh the weather (blocking; run on a thread). Successful results are cached in `cache`.
+pub fn refresh(loc: (f64, f64, String), cache: &str) -> Dash {
     match fetch_weather(loc.0, loc.1, &loc.2) {
-        Ok(w) => d.weather = Some(w),
-        Err(e) => d.error = Some(e),
+        Ok((w, body)) => {
+            let t = now();
+            let _ = std::fs::write(cache, format!("{t}\t{}\n{body}", loc.2));
+            Dash { weather: Some(w), updated: Some(t), error: None }
+        }
+        Err(e) => Dash { weather: None, updated: None, error: Some(e) },
     }
-    d
+}
+
+pub fn cache_path(sys: &Sys) -> String {
+    format!("{}/kos/weather.json", sys.us)
+}
+
+/// Last successful forecast saved on disk (survives restarts).
+pub fn load_cache(sys: &Sys) -> Dash {
+    let raw = std::fs::read_to_string(cache_path(sys)).unwrap_or_default();
+    let Some((head, body)) = raw.split_once('\n') else { return Dash::default() };
+    let (t, place) = head.split_once('\t').unwrap_or((head, ""));
+    match parse_weather(body, place) {
+        Ok(w) => Dash { weather: Some(w), updated: t.parse().ok(), error: None },
+        Err(_) => Dash::default(),
+    }
 }
 
 pub fn configured_location(sys: &Sys) -> Option<(f64, f64, String)> {
@@ -188,13 +214,10 @@ pub fn draw_sleep(disp: &mut dyn Display, fonts: &mut Fonts, d: &Dash, battery: 
                 c.text(fonts, x, y + 140, &format!("☂ {}%", day.rain), Face::Sans, 15, DARK, Anchor::MT);
             }
         }
-        None => {
-            c.text(fonts, w / 2, y + 120, "Sleeping", Face::Bold, 54, BLACK, Anchor::MM);
-            c.text(fonts, w / 2, y + 190, "Set a weather location in Settings", Face::Sans, 20, DARK, Anchor::MM);
-        }
+        None => {}
     }
     let updated = d.updated.map_or("not updated yet".into(), |u| format!("updated {}", sys::format_time(u, "%H:%M")));
-    let foot = format!("Battery {}%  ·  {}  ·  Press power to wake", battery.map_or("?".into(), |b| b.to_string()), updated);
+    let foot = format!("Battery {}%  ·  {}", battery.map_or("?".into(), |b| b.to_string()), updated);
     if d.weather.is_some() {
         c.text(fonts, w / 2, h - 66, "Weather data: Open-Meteo.com (CC BY 4.0)", Face::Sans, 13, DARK, Anchor::MM);
     }

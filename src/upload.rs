@@ -208,12 +208,12 @@ impl App for SendApp {
         if self.shared.is_none() {
             self.start(sys);
         }
-        sys.power.prevent_sleep(true);
+        sys.keep_awake = true;
     }
 
     fn on_hide(&mut self, sys: &mut Sys) {
         self.stop(sys);
-        sys.power.prevent_sleep(false);
+        sys.keep_awake = false;
     }
 
     fn render(&mut self, cx: &mut Ctx, a: Rect, sys: &mut Sys) {

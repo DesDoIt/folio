@@ -386,6 +386,12 @@ impl Reader {
         // when a chapter change is pending, its start is the position
         let off = if self.laid_out.is_none() { 0 } else { self.start_offset() };
         save_position(sys, &self.path, self.chapter, off);
+        // remember the book for the "current book" sleep screen (files only, not articles)
+        if std::path::Path::new(&self.path).is_file() {
+            let line = format!("{}\t{}\t{}\t{}\n", self.path, self.book.title.replace('\t', " "),
+                               self.book.author.replace('\t', " "), self.progress());
+            let _ = std::fs::write(format!("{}/kos/last-book.txt", sys.us), line);
+        }
     }
 
     fn progress(&self) -> u32 {

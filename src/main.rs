@@ -13,10 +13,12 @@ mod fb;
 mod games;
 mod getbooks;
 mod highlights;
+mod image;
 mod input;
 mod json;
 mod news;
 mod reader;
+mod screensaver;
 mod settings;
 mod sketch;
 mod sys;
@@ -39,17 +41,6 @@ fn log(msg: &str) {
     let line = format!("{} [gui] {msg}", sys::clock("%Y-%m-%d %H:%M:%S"));
     // the launcher redirects our stderr into kos/kos.log
     eprintln!("{line}");
-}
-
-fn sleep_screen(disp: &mut dyn Display, fonts: &mut Fonts, battery: Option<u32>) {
-    let (w, h) = disp.size();
-    let mut c = Canvas::new(w, h);
-    c.outline(Rect::new(40, 40, w - 40, h - 40), 4, BLACK);
-    c.text(fonts, w / 2, h / 2 - 60, "Sleeping", Face::Bold, 54, BLACK, Anchor::MM);
-    c.text(fonts, w / 2, h / 2 + 10, "Press the power button to wake", Face::Sans, 22, DARK, Anchor::MM);
-    let b = battery.map_or("?".into(), |b| b.to_string());
-    c.text(fonts, w / 2, h - 90, &format!("Kindle Linux · battery {b}%"), Face::Sans, 18, DARK, Anchor::MM);
-    disp.present(&c, Rect::new(0, 0, w, h), Update::Full);
 }
 
 fn crash_screen(disp: &mut dyn Display, msg: &str) {
@@ -98,13 +89,11 @@ struct Main {
     ui: Ui,
     sys: Sys,
     sleeping: bool,
-    /// Sleep was requested (menu or power button); if powerd hasn't reacted in time we suspend ourselves.
-    sleep_pending: Option<Instant>,
-    /// Set by the fallback-suspend thread when the device has woken up again.
-    woke: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    self_suspended: bool,
+    /// Ignore power-key presses right after waking (the press that woke us).
     ignore_power_until: Option<Instant>,
-    last_dash: Option<Instant>,
+    /// Last user input, for auto-sleep.
+    last_activity: Instant,
+    last_dash_try: Option<Instant>,
     dash_busy: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
@@ -112,16 +101,14 @@ impl Main {
     fn new(sim: bool, w: i32, h: i32) -> Main {
         let sys = Sys::new(sim);
         sys::set_timezone(&sys.config.get("timezone").to_string(), sim);
-        let mut m = Main { ui: Ui::new(w, h), sys, sleeping: false, sleep_pending: None,
-                           woke: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), self_suspended: false,
-                           ignore_power_until: None, last_dash: None,
-                           dash_busy: std::sync::Arc::new(std::sync::Mutex::new(false)) };
+        *sys.dash.lock().unwrap() = dashboard::load_cache(&sys);
+        let mut m = Main { ui: Ui::new(w, h), sys, sleeping: false, ignore_power_until: None, last_activity: Instant::now(),
+                           last_dash_try: None, dash_busy: std::sync::Arc::new(std::sync::Mutex::new(false)) };
         m.ui.push(Box::new(apps::Home::new()), &mut m.sys);
         m
     }
 
     fn startup(&mut self) {
-        self.sys.power.amazon_screensaver(false);
         if self.sys.config.flag("wifi_autostart") {
             let w = self.sys.wifi.clone();
             std::thread::spawn(move || {
@@ -135,57 +122,70 @@ impl Main {
         }
     }
 
+    /// Draw the chosen sleep screen (without suspending; the simulator stops here).
     fn enter_sleep(&mut self, disp: &mut dyn Display) {
         if !self.sleeping {
             self.sleeping = true;
-            log("going to screensaver");
             let b = sys::battery(self.sys.sim).capacity;
-            let dash_on = self.sys.config.get("sleep_screen") != "simple" && dashboard::configured_location(&self.sys).is_some();
-            if dash_on {
-                let d = self.sys.dash.lock().unwrap().clone();
-                dashboard::draw_sleep(disp, &mut self.ui.fonts, &d, b);
-            } else {
-                sleep_screen(disp, &mut self.ui.fonts, b);
-            }
+            screensaver::draw(disp, &mut self.ui.fonts, &self.sys, b);
         }
     }
 
-    /// Kick off a background dashboard refresh every 30 minutes (or when asked).
-    fn maybe_refresh_dashboard(&mut self) {
-        let due = self.sys.dash_refresh_now || self.last_dash.map_or(true, |t| t.elapsed() > Duration::from_secs(1800));
-        if !due || self.dash_busy.lock().map_or(true, |b| *b) {
+    /// Sleep now: draw the sleep screen, then suspend through the kernel until the power button wakes us.
+    /// (Amazon's powerd doesn't act while its UI is stopped, so we don't wait for it.)
+    fn go_to_sleep(&mut self, disp: &mut dyn Display, why: &str) {
+        if self.sleeping {
             return;
         }
-        let loc = dashboard::configured_location(&self.sys);
-        self.sys.dash_refresh_now = false;
-        self.last_dash = Some(Instant::now());
-        let Some(loc) = loc else { return };
-        let (slot, busy) = (self.sys.dash.clone(), self.dash_busy.clone());
-        *busy.lock().unwrap() = true;
-        std::thread::spawn(move || {
-            let d = dashboard::refresh(loc);
-            if let Some(e) = &d.error {
-                sys::log(&format!("dashboard: {e}"));
-            }
-            let mut cur = slot.lock().unwrap();
-            // keep the last good weather if this refresh failed (e.g. Wi-Fi was down)
-            let keep_weather = d.weather.is_none() && cur.weather.is_some();
-            let old_weather = cur.weather.take();
-            *cur = d;
-            if keep_weather {
-                cur.weather = old_weather;
-            }
-            *busy.lock().unwrap() = false;
-        });
+        log(&format!("sleep ({why})"));
+        self.enter_sleep(disp); // full refresh waits until the panel has finished updating
+        if self.sys.sim {
+            return;
+        }
+        let t0 = Instant::now();
+        let r = self.sys.power.suspend_now();
+        log(&format!("woke after {} s ({})", t0.elapsed().as_secs(), match r { Ok(()) => "ok".into(), Err(e) => e }));
+        self.leave_sleep();
     }
 
     fn leave_sleep(&mut self) {
         if self.sleeping {
             self.sleeping = false;
-            log("out of screensaver");
+            self.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
+            self.last_activity = Instant::now();
             self.sys.invalidate_status();
             self.ui.request(Update::Full);
         }
+    }
+
+    /// Weather: refresh when older than 30 min; after a failure retry every 2 min (only while online).
+    fn maybe_refresh_dashboard(&mut self) {
+        let Some(loc) = dashboard::configured_location(&self.sys) else { return };
+        let now_s = unsafe { libc::time(std::ptr::null_mut()) } as i64;
+        let stale = self.sys.dash.lock().unwrap().updated.map_or(true, |u| now_s - u > 1800);
+        let retry_ok = self.last_dash_try.map_or(true, |t| t.elapsed() > Duration::from_secs(120));
+        if !(self.sys.dash_refresh_now || (stale && retry_ok)) || self.dash_busy.lock().map_or(true, |b| *b) {
+            return;
+        }
+        if !self.sys.sim && sys::ip_address(false).is_none() {
+            return; // offline: try again once Wi-Fi is up
+        }
+        self.sys.dash_refresh_now = false;
+        self.last_dash_try = Some(Instant::now());
+        let (slot, busy, cache) = (self.sys.dash.clone(), self.dash_busy.clone(), dashboard::cache_path(&self.sys));
+        *busy.lock().unwrap() = true;
+        std::thread::spawn(move || {
+            let d = dashboard::refresh(loc, &cache);
+            let mut cur = slot.lock().unwrap();
+            match d.weather {
+                Some(_) => *cur = d,
+                None => {
+                    sys::log(&format!("weather: {}", d.error.clone().unwrap_or_default()));
+                    cur.error = d.error; // keep the last good forecast
+                }
+            }
+            *busy.lock().unwrap() = false;
+        });
     }
 
     fn after_input(&mut self, disp: &mut dyn Display) {
@@ -194,26 +194,14 @@ impl Main {
         }
         if self.sys.sleep_requested {
             self.sys.sleep_requested = false;
-            self.sys.power.sleep();
-            self.sleep_pending = Some(Instant::now());
-            if self.sys.sim {
-                self.enter_sleep(disp);
-            }
+            self.go_to_sleep(disp, "menu");
         }
     }
 
-    /// powerd didn't start the screensaver: draw our sleep screen and suspend via the kernel.
-    fn fallback_sleep(&mut self, disp: &mut dyn Display) {
-        log("sleep: powerd didn't react, suspending directly");
-        self.enter_sleep(disp);
-        self.self_suspended = true;
-        let woke = self.woke.clone();
-        woke.store(false, std::sync::atomic::Ordering::SeqCst);
-        // give the e-ink refresh time to finish before the display controller is powered down
-        std::thread::sleep(Duration::from_millis(1500));
-        let r = self.sys.power.suspend_now();
-        log(&format!("sleep: resumed ({})", match r { Ok(()) => "ok".to_string(), Err(e) => e }));
-        woke.store(true, std::sync::atomic::Ordering::SeqCst);
+    fn auto_sleep_due(&mut self, touching: bool) -> bool {
+        let mins: u64 = self.sys.config.get("auto_sleep_minutes").parse().unwrap_or(10);
+        mins > 0 && !self.sys.keep_awake && !touching && !self.ui.top().busy()
+            && self.last_activity.elapsed() > Duration::from_secs(mins * 60)
     }
 
     fn run(&mut self, disp: &mut dyn Display, mut touch: Option<Touch>) -> i32 {
@@ -242,7 +230,7 @@ impl Main {
                     mark_boot_ok();
                 }
             }
-            // poll set: touch, powerd watcher, top app's fd
+            // poll set: touch, powerd/hal events, power key, top app's fd
             let mut fds: Vec<libc::pollfd> = vec![];
             let touch_fd = touch.as_ref().map(|t| t.fd());
             let watch_fd = watcher.as_ref().map(|w| w.fd());
@@ -252,10 +240,10 @@ impl Main {
                 fds.push(libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
             }
             let fast = touch.as_ref().map_or(false, |t| t.down) || self.ui.top().busy() || self.ui.has_toast()
-                || self.sleep_pending.is_some()
                 || self.ui.cleanup_pending();
             let timeout = if fast { 100 } else { 1000 };
             unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
+            let mut power_pressed = false;
             for p in &fds {
                 if p.revents == 0 {
                     continue;
@@ -267,7 +255,7 @@ impl Main {
                     let gestures = t.read();
                     let raw_events = t.raw.as_mut().map(std::mem::take).unwrap_or_default();
                     if !self.sleeping {
-                        self.sys.power.poke();
+                        self.last_activity = Instant::now();
                         let raw_top = if raw_mode { self.ui.raw_top() } else { 0 };
                         for ev in raw_events {
                             let y = match ev { ui::RawTouch::Down(_, y) | ui::RawTouch::Move(_, y) | ui::RawTouch::Up(_, y) => y };
@@ -284,29 +272,30 @@ impl Main {
                     }
                 } else if Some(p.fd) == watch_fd {
                     for line in watcher.as_mut().unwrap().lines() {
-                        if line.contains("goingToScreenSaver") {
-                            self.sleep_pending = None;
-                            self.enter_sleep(disp);
-                        } else if line.contains("outOfScreenSaver") {
-                            self.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
-                            self.leave_sleep();
-                        } else if !line.is_empty() {
+                        if line.is_empty() {
+                            continue;
+                        }
+                        log(&format!("lipc event: {line}"));
+                        let l = line.to_lowercase();
+                        if l.contains("goingtoscreensaver") || l.contains("powerbutton") || l.contains("buttonpress") {
+                            power_pressed = true;
+                        } else if l.contains("charging") || l.contains("batt") {
                             self.sys.invalidate_status();
                             self.ui.request(Update::Quality);
                         }
                     }
                 } else if Some(p.fd) == key_fd {
-                    let n = power_key.as_mut().unwrap().presses();
-                    let ignore = self.ignore_power_until.map_or(false, |t| Instant::now() < t);
-                    if n > 0 && !ignore && !self.sleeping {
-                        // powerd normally handles the button itself; only start the fallback timer
+                    if power_key.as_mut().unwrap().presses() > 0 {
                         log("power key pressed");
-                        self.sleep_pending = Some(Instant::now());
+                        power_pressed = true;
                     }
                 } else if Some(p.fd) == app_fd {
                     let c = self.ui.top().on_fd(&mut self.sys);
                     self.ui.apply(c, &mut self.sys);
                 }
+            }
+            if power_pressed && !self.ignore_power_until.map_or(false, |t| Instant::now() < t) {
+                self.go_to_sleep(disp, "power button");
             }
             if let Some(t) = touch.as_mut() {
                 if let Some(g) = t.pending_long() {
@@ -319,19 +308,6 @@ impl Main {
             self.ui.apply(c, &mut self.sys);
             self.ui.expire_toast();
             self.ui.idle_cleanup();
-            // sleep fallback: powerd didn't start the screensaver within 4 s
-            if self.sleep_pending.map_or(false, |t| t.elapsed() > Duration::from_secs(4)) && !self.sleeping {
-                self.sleep_pending = None;
-                self.fallback_sleep(disp);
-            }
-            if self.self_suspended && self.woke.load(std::sync::atomic::Ordering::SeqCst) {
-                self.self_suspended = false;
-                self.ignore_power_until = Some(Instant::now() + Duration::from_secs(2));
-                if let Some(k) = power_key.as_mut() {
-                    k.presses(); // drop the wake-up press
-                }
-                self.leave_sleep();
-            }
             self.after_input(disp);
             if last_tick.elapsed() >= Duration::from_secs(1) && !self.sleeping {
                 last_tick = Instant::now();
@@ -342,6 +318,10 @@ impl Main {
                 if m != last_min {
                     last_min = m;
                     self.ui.request(Update::Quality); // header clock
+                }
+                let touching = touch.as_ref().map_or(false, |t| t.down);
+                if self.auto_sleep_due(touching) {
+                    self.go_to_sleep(disp, "inactivity");
                 }
             }
         }
@@ -354,9 +334,6 @@ impl Main {
         if let Some(mut w) = watcher {
             let _ = w.child.kill();
             let _ = w.child.wait();
-        }
-        if matches!(code, 0 | 11 | 20 | 21) {
-            self.sys.power.amazon_screensaver(true);
         }
         code
     }
@@ -812,7 +789,7 @@ fn sim_main(out: &str) -> i32 {
         Err(e) => println!("geocode failed: {e}"),
     }
     s.m.sys.config.set("sleep_screen", "dashboard");
-    let d = dashboard::refresh(dashboard::configured_location(&s.m.sys).expect("location"));
+    let d = dashboard::refresh(dashboard::configured_location(&s.m.sys).expect("location"), &dashboard::cache_path(&s.m.sys));
     println!("dashboard: weather={} error={:?}", d.weather.is_some(), d.error);
     *s.m.sys.dash.lock().unwrap() = d;
     s.m.ui.request(Update::Full);
@@ -820,12 +797,47 @@ fn sim_main(out: &str) -> i32 {
     s.tap("Settings");
     s.shot("settings-dashboard");
     s.tap("‹");
-    s.m.sleeping = false;
-    s.m.enter_sleep(&mut s.disp);
-    s.n += 1;
-    let name = format!("{:02}-dashboard-sleep", s.n);
-    s.disp.snapshot(&Canvas::new(1, 1), &name);
-    s.m.leave_sleep();
+    // every sleep screen
+    let us = s.m.sys.us.clone();
+    let _ = std::fs::create_dir_all(format!("{us}/screensavers"));
+    {
+        // a test picture: soft diagonal gradient with a circle
+        let (w, h) = (900u32, 1200u32);
+        let mut px = vec![0u8; (w * h) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let (dx, dy) = (x as f32 - 450.0, y as f32 - 520.0);
+                let d = (dx * dx + dy * dy).sqrt();
+                px[(y * w + x) as usize] = if d < 260.0 { 40 } else { (120 + (x + y) * 120 / (w + h)) as u8 };
+            }
+        }
+        let f = std::fs::File::create(format!("{us}/screensavers/test.png")).unwrap();
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+        e.set_color(png::ColorType::Grayscale);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(&px).unwrap();
+    }
+    let covered = format!("{us}/documents/The Time Machine - H. G. Wells.epub");
+    for (mode, name) in [("weather", "sleep-weather"), ("book", "sleep-book"), ("highlight", "sleep-highlight"),
+                         ("pictures", "sleep-pictures"), ("date", "sleep-date")] {
+        s.m.sys.config.set("sleep_screen", mode);
+        s.m.sleeping = false;
+        s.m.enter_sleep(&mut s.disp);
+        s.n += 1;
+        let n = format!("{:02}-{name}", s.n);
+        s.disp.snapshot(&Canvas::new(1, 1), &n);
+        s.m.leave_sleep();
+        if mode == "book" && std::path::Path::new(&covered).exists() {
+            let _ = std::fs::write(format!("{us}/kos/last-book.txt"), format!("{covered}\tThe Time Machine\tH. G. Wells\t37\n"));
+            s.m.sleeping = false;
+            s.m.enter_sleep(&mut s.disp);
+            s.n += 1;
+            let n = format!("{:02}-sleep-book-cover", s.n);
+            s.disp.snapshot(&Canvas::new(1, 1), &n);
+            s.m.leave_sleep();
+        }
+    }
+    s.m.sys.config.set("sleep_screen", "weather");
     s.tap("Power");
     s.m.sys.config.set("sleep_screen", "simple");
     s.tap("Sleep");

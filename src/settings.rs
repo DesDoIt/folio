@@ -24,6 +24,7 @@ pub struct WifiApp {
     scan: Option<Slot<Result<(Vec<Network>, BTreeMap<String, String>), String>>>,
     connect: Option<(Slot<BTreeMap<String, String>>, Instant)>,
     sel: usize,
+    ticks: u32,
 }
 
 const ID_TOGGLE: u32 = 1_000_000;
@@ -33,7 +34,7 @@ const TAG_FORGET: u32 = 2;
 
 impl WifiApp {
     pub fn new() -> WifiApp {
-        WifiApp { pager: Pager::new(66), networks: vec![], status: BTreeMap::new(), scan: None, connect: None, sel: 0 }
+        WifiApp { pager: Pager::new(66), networks: vec![], status: BTreeMap::new(), scan: None, connect: None, sel: 0, ticks: 0 }
     }
 
     fn start_scan(&mut self, sys: &Sys) {
@@ -123,6 +124,23 @@ impl App for WifiApp {
 
     fn busy(&self) -> bool {
         self.scan.is_some() || self.connect.is_some()
+    }
+
+    /// Keep the connection status live (DHCP can finish after the connect step returns).
+    fn tick(&mut self, sys: &mut Sys) -> Cmd {
+        self.ticks += 1;
+        if self.ticks % 3 != 0 || !sys.wifi.running() || self.scan.is_some() || self.connect.is_some() {
+            return Cmd::None;
+        }
+        let st = sys.wifi.status();
+        let changed = st.get("wpa_state") != self.status.get("wpa_state") || st.get("ip_address") != self.status.get("ip_address")
+            || st.get("ssid") != self.status.get("ssid");
+        if changed {
+            self.status = st;
+            sys.invalidate_status();
+            return Cmd::Redraw;
+        }
+        Cmd::None
     }
 
     fn poll(&mut self, _sys: &mut Sys) -> Cmd {
@@ -271,6 +289,10 @@ const S_REFRESH: u32 = 6;
 const S_WIFI_AUTO: u32 = 7;
 const S_WEATHER: u32 = 8;
 const S_SLEEPSCREEN: u32 = 10;
+const S_AUTOSLEEP: u32 = 14;
+const T_SLEEPSCREEN: u32 = 6;
+const T_AUTOSLEEP: u32 = 7;
+const AUTO_SLEEP: [u32; 6] = [2, 5, 10, 15, 30, 0];
 const S_DASH_NOW: u32 = 11;
 const S_PAGE: u32 = 12;
 const S_SYSTEM: u32 = 13;
@@ -312,17 +334,21 @@ impl App for SettingsApp {
         let ip = sys::ip_address(sys.sim).unwrap_or_else(|| "no Wi-Fi".into());
         let ssh_sub = if running { format!("ssh root@{ip}") } else { "Port 22, password login".into() };
         if self.page == 0 {
+        section(cx, &mut y, "SLEEP");
+        let mode = crate::screensaver::mode_label(sys.config.get("sleep_screen"));
+        let sub = if sys.config.get("sleep_screen") == "pictures" { Some("PNG/JPG files in the “screensavers” folder") } else { None };
+        item(cx, &mut y, S_SLEEPSCREEN, "Sleep screen", mode, sub);
+        let mins = sys.config.get("auto_sleep_minutes").parse::<u32>().unwrap_or(10);
+        let auto = if mins == 0 { "never".to_string() } else { format!("{mins} min") };
+        item(cx, &mut y, S_AUTOSLEEP, "Sleep after inactivity", &auto, None);
+        let place = sys.config.get("weather_place").to_string();
+        item(cx, &mut y, S_WEATHER, "Weather location", if place.is_empty() { "not set" } else { &place }, None);
+        let upd = sys.dash.lock().unwrap().updated.map_or("never".to_string(), |u| sys::format_time(u, "%d %b %H:%M"));
+        item(cx, &mut y, S_DASH_NOW, "Refresh weather", &upd, Some("Updates every 30 min while on Wi-Fi"));
         section(cx, &mut y, "REMOTE ACCESS");
         item(cx, &mut y, S_SSH, "SSH server", if running { "ON" } else { "OFF" }, Some(&ssh_sub));
         item(cx, &mut y, S_PASSWORD, "Root password", if sys.ssh.has_password() { "set" } else { "not set" }, None);
         item(cx, &mut y, S_SSH_AUTO, "Start SSH automatically", if sys.config.flag("ssh_autostart") { "yes" } else { "no" }, None);
-        section(cx, &mut y, "WEATHER (SLEEP SCREEN)");
-        let place = sys.config.get("weather_place").to_string();
-        item(cx, &mut y, S_WEATHER, "Weather location", if place.is_empty() { "not set" } else { &place }, None);
-        let ss = if sys.config.get("sleep_screen") == "simple" { "Simple" } else { "Weather" };
-        item(cx, &mut y, S_SLEEPSCREEN, "Sleep screen", ss, None);
-        let upd = sys.dash.lock().unwrap().updated.map_or("never".to_string(), |u| sys::format_time(u, "%H:%M"));
-        item(cx, &mut y, S_DASH_NOW, "Refresh weather", &upd, None);
         } else {
         section(cx, &mut y, "TIME");
         let tz = sys.config.get("timezone").to_string();
@@ -383,11 +409,10 @@ impl App for SettingsApp {
             S_SSH_AUTO => flip(sys, "ssh_autostart"),
             S_WEATHER => Cmd::Dialog(Dialog::input(T_WEATHER, "Weather location", sys.config.get("weather_place"), "Find")
                 .with_message("City name, e.g. Pune or Berlin")),
-            S_SLEEPSCREEN => {
-                let v = if sys.config.get("sleep_screen") == "simple" { "dashboard" } else { "simple" };
-                sys.config.set("sleep_screen", v);
-                Cmd::Redraw
-            }
+            S_SLEEPSCREEN => Cmd::Dialog(Dialog::menu(T_SLEEPSCREEN, "Sleep screen",
+                crate::screensaver::MODES.iter().map(|m| m.1.to_string()).collect())),
+            S_AUTOSLEEP => Cmd::Dialog(Dialog::menu(T_AUTOSLEEP, "Sleep after inactivity",
+                AUTO_SLEEP.iter().map(|m| if *m == 0 { "Never".to_string() } else { format!("{m} minutes") }).collect())),
             S_DASH_NOW => {
                 sys.dash_refresh_now = true;
                 Cmd::Toast("Refreshing…".into())
@@ -439,6 +464,21 @@ impl App for SettingsApp {
                 }
                 Err(e) => Cmd::Dialog(Dialog::message("Couldn't find that place", &e)),
             },
+            T_SLEEPSCREEN => {
+                if let Some(m) = crate::screensaver::MODES.get(choice) {
+                    sys.config.set("sleep_screen", m.0);
+                    if m.0 == "pictures" {
+                        let _ = std::fs::create_dir_all(crate::screensaver::pictures_dir(sys));
+                    }
+                }
+                Cmd::Redraw
+            }
+            T_AUTOSLEEP => {
+                if let Some(m) = AUTO_SLEEP.get(choice) {
+                    sys.config.set("auto_sleep_minutes", &m.to_string());
+                }
+                Cmd::Redraw
+            }
             T_TZ => {
                 if let Some(tz) = TIMEZONES.get(choice) {
                     sys.config.set("timezone", tz);

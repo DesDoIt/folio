@@ -489,51 +489,13 @@ impl Ssh {
     }
 }
 
-// --- Power (Amazon powerd via lipc) -------------------------------------------------
+// --- Power: kernel suspend + powerd/HAL event watcher ---------------------------------
 pub struct Power {
     sim: bool,
-    last_poke: Option<Instant>,
 }
 
 impl Power {
-    fn lipc(&self, prop: &str, value: &str) {
-        if !self.sim {
-            run(&["lipc-set-prop", "com.lab126.powerd", prop, value], true);
-        }
-    }
-
-    /// Reset powerd's idle timer so it doesn't sleep while the user is active.
-    pub fn poke(&mut self) {
-        if self.last_poke.map_or(true, |t| t.elapsed() > Duration::from_secs(30)) {
-            self.last_poke = Some(Instant::now());
-            self.lipc("touchScreenSaverTimeout", "1");
-        }
-    }
-
-    /// Keep the device awake (e.g. while the upload page is open).
-    pub fn prevent_sleep(&self, on: bool) {
-        self.lipc("preventScreenSaver", if on { "1" } else { "0" });
-    }
-
-    /// Same as pressing the power button: powerd shows the screensaver, then suspends.
-    pub fn sleep(&self) {
-        if !self.sim {
-            let out = run(&["lipc-set-prop", "com.lab126.powerd", "powerButton", "1"], true);
-            log(&format!("sleep: asked powerd ({})", if out.trim().is_empty() { "ok" } else { out.trim() }));
-            let st = run(&["lipc-get-prop", "com.lab126.powerd", "status"], true);
-            log(&format!("sleep: powerd status: {}", st.lines().next().unwrap_or("?")));
-        }
-    }
-
-    /// Amazon's screensaver module draws via X (which we stop); unload it while we run, like KOReader.
-    pub fn amazon_screensaver(&self, load: bool) {
-        if !self.sim {
-            let out = run(&["lipc-set-prop", "com.lab126.blanket", if load { "load" } else { "unload" }, "screensaver"], true);
-            log(&format!("blanket {} screensaver: {}", if load { "load" } else { "unload" }, if out.trim().is_empty() { "ok" } else { out.trim() }));
-        }
-    }
-
-    /// Fallback suspend straight through the kernel (blocks until the device wakes up).
+    /// Suspend straight through the kernel (blocks until the power button wakes the device).
     pub fn suspend_now(&self) -> Result<(), String> {
         if self.sim {
             return Ok(());
@@ -541,14 +503,15 @@ impl Power {
         std::fs::write("/sys/power/state", "mem").map_err(|e| e.to_string())
     }
 
-    /// Long-running `lipc-wait-event` printing powerd events, one per line.
+    /// Long-running `lipc-wait-event`s printing every powerd and HAL event, one per line.
+    /// (Used to catch power-button presses when the input device is grabbed by powerd.)
     pub fn watcher(&self) -> Option<Child> {
         if self.sim {
             return None;
         }
         Command::new("chroot")
-            .args([HOST, "lipc-wait-event", "-m", "com.lab126.powerd",
-                   "goingToScreenSaver,outOfScreenSaver,charging,notCharging,battLevelChanged"])
+            .args([HOST, "sh", "-c",
+                   "lipc-wait-event -m com.lab126.powerd '*' & lipc-wait-event -m com.lab126.hal '*' & wait"])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()
     }
 }
@@ -572,6 +535,8 @@ pub struct Sys {
     pub keyboard_visible: bool,
     pub full_every_changed: Option<u32>,
     pub sleep_requested: bool,
+    /// Apps that must not be interrupted by auto-sleep (e.g. the upload page) set this.
+    pub keep_awake: bool,
     /// Screen position of the gesture currently being dispatched.
     pub last_touch: (i32, i32),
     /// Latest weather data, refreshed in the background.
@@ -588,13 +553,14 @@ impl Sys {
             config: Config::load(sim),
             wifi: Wifi::new(sim),
             ssh: Ssh { sim },
-            power: Power { sim, last_poke: None },
+            power: Power { sim },
             keyboard_visible: true,
             full_every_changed: None,
             sleep_requested: false,
+            keep_awake: false,
             last_touch: (0, 0),
             dash: Arc::new(Mutex::new(Default::default())),
-            dash_refresh_now: true,
+            dash_refresh_now: false,
             status: (None, Status::default()),
         }
     }

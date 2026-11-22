@@ -20,7 +20,8 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 | <img src="docs/screenshots/home.png" width="240" alt="Home screen"><br>Home | <img src="docs/screenshots/reader.png" width="240" alt="Built-in reader"><br>Reader | <img src="docs/screenshots/word-menu.png" width="240" alt="Long-press a word"><br>Define / highlight |
 | <img src="docs/screenshots/get-books.png" width="240" alt="Get Books"><br>Get Books | <img src="docs/screenshots/books.png" width="240" alt="Library"><br>Library | <img src="docs/screenshots/send-to-kindle.png" width="240" alt="Send to Kindle"><br>Send to Kindle |
 | <img src="docs/screenshots/news.png" width="240" alt="News feed"><br>News | <img src="docs/screenshots/news-article.png" width="240" alt="News article"><br>Article | <img src="docs/screenshots/wikipedia.png" width="240" alt="Wikipedia article"><br>Wikipedia |
-| <img src="docs/screenshots/web-start.png" width="240" alt="Web browser"><br>Web | <img src="docs/screenshots/web-results.png" width="240" alt="Search results"><br>Search results | <img src="docs/screenshots/dashboard.png" width="240" alt="Weather sleep screen"><br>Weather sleep screen |
+| <img src="docs/screenshots/web-start.png" width="240" alt="Web browser"><br>Web | <img src="docs/screenshots/web-results.png" width="240" alt="Search results"><br>Search results | <img src="docs/screenshots/sleep-book.png" width="240" alt="Sleep screen: current book"><br>Sleep: current book |
+| <img src="docs/screenshots/sleep-weather.png" width="240" alt="Sleep screen: weather"><br>Sleep: weather | <img src="docs/screenshots/sleep-highlight.png" width="240" alt="Sleep screen: highlight"><br>Sleep: highlight | <img src="docs/screenshots/sleep-date.png" width="240" alt="Sleep screen: date"><br>Sleep: date |
 | <img src="docs/screenshots/chess.png" width="240" alt="Chess"><br>Chess | <img src="docs/screenshots/sudoku.png" width="240" alt="Sudoku"><br>Sudoku | <img src="docs/screenshots/sketch.png" width="240" alt="Sketchpad"><br>Sketch |
 | <img src="docs/screenshots/highlights.png" width="240" alt="Highlights"><br>Highlights | <img src="docs/screenshots/stats.png" width="240" alt="Reading stats"><br>Reading stats | <img src="docs/screenshots/terminal.png" width="240" alt="Terminal"><br>Terminal |
 | <img src="docs/screenshots/files.png" width="240" alt="File manager"><br>Files | <img src="docs/screenshots/settings.png" width="240" alt="Settings"><br>Settings | <img src="docs/screenshots/boot-menu.png" width="240" alt="Boot menu"><br>Boot menu |
@@ -45,8 +46,9 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
   8 languages
 - **Web**: touch browser in reading mode (text + tappable links, no JavaScript), choice of search engine,
   bookmarks, save-for-offline, EPUB downloads, "Open in Kindle's browser" for full pages
-- **Weather sleep screen**: current conditions, feels-like, humidity, wind, sunrise/sunset and a 5-day forecast
-  (Open-Meteo, no account); today's weather also shows on the home screen
+- **Sleep screens**: your current book (cover + progress), a random highlight, your own pictures (PNG/JPG in
+  `screensavers/`), weather (current conditions and a 5-day forecast from Open-Meteo, no account) or a clean
+  date screen. Sleeps on the power button, from the Power menu, or after 2–30 minutes of inactivity
 
 **Play & make**
 - **Games**: Sudoku (3 levels, unique-solution puzzles) and Chess against a small built-in engine
