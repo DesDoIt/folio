@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 
 const BOOK_EXT: &[&str] = &["epub", "pdf", "mobi", "azw", "azw3", "fb2", "djvu", "cbz", "cbr", "txt", "rtf", "html",
                             "htm", "doc", "docx", "chm", "kfx", "prc"];
-const DRM_EXT: &[&str] = &["kfx", "azw"];
+const DRM_EXT: &[&str] = &["kfx"]; // Amazon store format; .azw/.azw3 are tried (DRM is detected when opening)
 /// Formats the built-in reader handles; everything else goes to KOReader.
-const READER_EXT: &[&str] = &["epub", "txt", "html", "htm"];
+const READER_EXT: &[&str] = &["epub", "txt", "html", "htm", "mobi", "azw3", "azw", "prc"];
 const KOREADER_EXT: &[&str] = &["epub", "pdf", "mobi", "azw3", "fb2", "djvu", "cbz", "cbr", "rtf", "doc", "docx",
                                 "chm", "prc"];
 

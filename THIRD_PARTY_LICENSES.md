@@ -44,8 +44,16 @@ When distributing a compiled binary, include this file and the licenses it refer
 - **DejaVu Sans, DejaVu Sans Bold, DejaVu Sans Mono** (`fonts/`, embedded in the binary): Bitstream Vera
   Fonts license, with DejaVu changes in the public domain and Arev glyphs under their own permissive terms.
   Full text: `fonts/DejaVu-LICENSE`.
+- **DejaVu Sans Oblique** (`fonts/`, embedded): same license as the other DejaVu fonts.
 - **Droid Sans Fallback and other Droid non-Latin fonts** (installed in the Alpine image from the
   `font-droid-nonlatin` package, not stored in this repository): Apache-2.0.
+
+## Hyphenation patterns
+
+`data/hyph-en-us.pat.txt`: US English hyphenation patterns from the hyph-utf8 project
+(https://github.com/hyphenation/tex-hyphen), Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken.
+Copying and distribution, with or without modification, are permitted in any medium without
+royalty provided the copyright notice and this notice are preserved (`data/hyph-en-us.LICENSE`).
 
 ## Alpine Linux image
 

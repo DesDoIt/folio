@@ -360,7 +360,8 @@ impl App for Web {
         // content
         let content = Rect::new(a.x0, a.y0 + 52, a.x1, a.y1 - 58);
         if self.laid_out != Some((content, self.fs)) {
-            self.pages = paginate(&self.blocks, cx.f, self.fs, content);
+            self.pages = paginate(&self.blocks, cx.f, self.fs, content, crate::reader::Layout::default(),
+                                  &crate::reader::Images::new());
             self.page = self.page.min(self.pages.len().saturating_sub(1));
             self.laid_out = Some((content, self.fs));
         }

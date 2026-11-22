@@ -49,6 +49,7 @@ pub enum Face {
     Sans,
     Bold,
     Mono,
+    Italic,
 }
 
 /// Where (x, y) sits relative to the text: Left/Center/Right x Top/Middle/Baseline.
@@ -75,6 +76,7 @@ pub struct Fonts {
     sans: fontdue::Font,
     bold: fontdue::Font,
     mono: fontdue::Font,
+    italic: fontdue::Font,
     cache: HashMap<(Face, char, u16), Glyph>,
     /// Extra scripts (CJK, Devanagari, Arabic, Hebrew, Thai...), loaded on first use from disk.
     fallbacks: Option<Vec<fontdue::Font>>,
@@ -96,6 +98,7 @@ const FALLBACK_FONTS: &[&str] = &[
 static SANS: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 static BOLD: &[u8] = include_bytes!("../fonts/DejaVuSans-Bold.ttf");
 static MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
+static ITALIC: &[u8] = include_bytes!("../fonts/DejaVuSans-Oblique.ttf");
 
 impl Fonts {
     pub fn load() -> Fonts {
@@ -104,6 +107,7 @@ impl Fonts {
             sans: fontdue::Font::from_bytes(SANS, s).expect("sans font"),
             bold: fontdue::Font::from_bytes(BOLD, s).expect("bold font"),
             mono: fontdue::Font::from_bytes(MONO, s).expect("mono font"),
+            italic: fontdue::Font::from_bytes(ITALIC, s).expect("italic font"),
             cache: HashMap::new(),
             fallbacks: None,
         }
@@ -114,6 +118,7 @@ impl Fonts {
             Face::Sans => &self.sans,
             Face::Bold => &self.bold,
             Face::Mono => &self.mono,
+            Face::Italic => &self.italic,
         }
     }
 

@@ -29,9 +29,10 @@ Rendered by the built-in simulator (`tools/screenshots.sh`), pixel-for-pixel wha
 ## Features
 
 **Reading**
-- **Reader**: built-in, for EPUB, TXT and saved web pages: full-screen pages, tap or swipe to turn, chapters,
-  font sizes, position saved per book. Long-press a word to **define** it (English, online) or **highlight**
-  its sentence
+- **Reader**: built-in, for EPUB, DRM-free MOBI/AZW3, TXT and saved web pages: full-screen pages, tap or
+  swipe to turn, chapters, bookmarks, search, footnote pop-ups, images, italics, hyphenation, font size,
+  margins and line spacing; position saved per book. Long-press a word to **define** it (English, online)
+  or **highlight** its sentence
 - **Books**: your library; tap opens the built-in reader (EPUB, TXT, saved pages) or, for other formats
   (PDF, MOBI/AZW3, comics), KOReader; hold any book to open it in KOReader
 - **Get Books**: search/browse Project Gutenberg and Standard Ebooks, or download any EPUB link
@@ -96,6 +97,7 @@ and restarts the stock Kindle services.
 | `docs/screenshots/` | README screenshots (regenerate with `tools/screenshots.sh`) |
 | `tests/fixtures/` | `sample.epub` used by the simulator |
 | `fonts/` | DejaVu fonts (embedded into the binary) |
+| `data/` | Hyphenation patterns (embedded) |
 
 ## Building
 

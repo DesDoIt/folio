@@ -240,6 +240,7 @@ pub fn decode_entities(s: &str) -> String {
             "quot" => Some('"'),
             "apos" => Some('\''),
             "nbsp" => Some('\u{a0}'),
+            "shy" => Some('\u{ad}'),
             "mdash" => Some('—'),
             "ndash" => Some('–'),
             "hellip" => Some('…'),
@@ -278,12 +279,15 @@ pub enum BlockKind {
     Item,
     Quote,
     Rule,
+    /// An image; its source path is in `runs[0].text` (resolved to a zip path by `Book::chapter_blocks`).
+    Image,
 }
 
 #[derive(Clone, Debug)]
 pub struct Run {
     pub text: String,
     pub bold: bool,
+    pub italic: bool,
     /// Index into the document's link list (web pages), if this text is a link.
     pub link: Option<u32>,
 }
@@ -307,17 +311,21 @@ struct Builder {
     cur: Option<Block>,
     offset: usize,
     bold: u32,
+    italic: u32,
     pre: u32,
     quote: u32,
     space_pending: bool,
     link: Option<u32>,
     links: Vec<String>,
+    /// element ids seen since the last flushed block (assigned to the next block's start)
+    pending_ids: Vec<String>,
+    anchors: HashMap<String, usize>,
 }
 
 impl Builder {
     fn new() -> Builder {
-        Builder { blocks: vec![], cur: None, offset: 0, bold: 0, pre: 0, quote: 0, space_pending: false, link: None,
-                  links: vec![] }
+        Builder { blocks: vec![], cur: None, offset: 0, bold: 0, italic: 0, pre: 0, quote: 0, space_pending: false, link: None,
+                  links: vec![], pending_ids: vec![], anchors: HashMap::new() }
     }
 
     fn flush(&mut self) {
@@ -329,6 +337,9 @@ impl Builder {
             b.runs.retain(|r| !r.text.is_empty());
             if !b.runs.is_empty() || b.kind == BlockKind::Rule {
                 b.start = self.offset;
+                for id in self.pending_ids.drain(..) {
+                    self.anchors.insert(id, b.start);
+                }
                 self.offset += b.chars();
                 self.blocks.push(b);
             }
@@ -342,9 +353,18 @@ impl Builder {
     }
 
     fn text(&mut self, t: &str) {
+        // soft hyphens (U+00AD) only mark possible breaks; our own hyphenation handles breaking
+        let owned;
+        let t = if t.contains('\u{ad}') {
+            owned = t.replace('\u{ad}', "");
+            owned.as_str()
+        } else {
+            t
+        };
         let pre = self.pre > 0;
         let blk = self.cur.get_or_insert_with(|| Block { kind: BlockKind::Para, runs: vec![], start: 0 });
         let bold = self.bold > 0 || matches!(blk.kind, BlockKind::Heading(_));
+        let italic = self.italic > 0;
         let mut s = String::new();
         if pre {
             s.push_str(t);
@@ -371,8 +391,8 @@ impl Builder {
             return;
         }
         match blk.runs.last_mut() {
-            Some(r) if r.bold == bold && r.link == self.link => r.text.push_str(&s),
-            _ => blk.runs.push(Run { text: s, bold, link: self.link }),
+            Some(r) if r.bold == bold && r.italic == italic && r.link == self.link => r.text.push_str(&s),
+            _ => blk.runs.push(Run { text: s, bold, italic, link: self.link }),
         }
     }
 }
@@ -382,9 +402,26 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
     html_to_doc(html, false).0
 }
 
+/// A chapter with its link targets and element-id anchors (id -> character offset).
+pub struct Doc {
+    pub blocks: Vec<Block>,
+    pub links: Vec<String>,
+    pub anchors: HashMap<String, usize>,
+}
+
+pub fn html_to_full(html: &str) -> Doc {
+    let (blocks, links, anchors) = html_to_doc_inner(html, false);
+    Doc { blocks, links, anchors }
+}
+
 /// HTML -> (blocks, link targets). Links become runs with `link: Some(index)`.
 /// `reader_view` keeps only <article>/<main> when present and drops nav/header/footer/aside.
 pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
+    let (blocks, links, _) = html_to_doc_inner(html, reader_view);
+    (blocks, links)
+}
+
+fn html_to_doc_inner(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>, HashMap<String, usize>) {
     let mut b = Builder::new();
     let mut skip = 0u32; // inside head/script/style
     let body_start = html.find("<body").unwrap_or(0);
@@ -402,6 +439,9 @@ pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
     for tok in tokenize(src) {
         match tok {
             Tok::Open(name, attrs, sc) => {
+                if let Some(id) = attrs.get("id").or_else(|| if name == "a" { attrs.get("name") } else { None }) {
+                    b.pending_ids.push(id.clone());
+                }
                 if junk.contains(&name.as_str()) && !sc {
                     skip += 1;
                     continue;
@@ -437,6 +477,7 @@ pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
                         b.flush();
                     }
                     "b" | "strong" if !sc => b.bold += 1,
+                    "i" | "em" | "cite" | "var" | "dfn" if !sc => b.italic += 1,
                     "a" if !sc => {
                         if let Some(h) = attrs.get("href").filter(|h| !h.starts_with('#') && !h.starts_with("javascript:")) {
                             b.links.push(h.clone());
@@ -445,7 +486,16 @@ pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
                     }
                     "td" | "th" => b.text(" "),
                     "img" | "image" => {
-                        if let Some(alt) = attrs.get("alt").filter(|a| !a.trim().is_empty()) {
+                        if let Some(src) = attrs.get("src").or_else(|| attrs.get("href")).filter(|s| !s.is_empty()) {
+                            let kind = b.cur.as_ref().map(|c| c.kind);
+                            b.flush();
+                            b.cur = Some(Block { kind: BlockKind::Image,
+                                                 runs: vec![Run { text: src.clone(), bold: false, italic: false, link: None }], start: 0 });
+                            b.flush();
+                            if let Some(k) = kind.filter(|k| *k != BlockKind::Image) {
+                                b.cur = Some(Block { kind: k, runs: vec![], start: 0 });
+                            }
+                        } else if let Some(alt) = attrs.get("alt").filter(|a| !a.trim().is_empty()) {
                             b.text(&format!(" [{}] ", alt.trim()));
                         }
                     }
@@ -472,6 +522,7 @@ pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
                         b.flush();
                     }
                     "b" | "strong" => b.bold = b.bold.saturating_sub(1),
+                    "i" | "em" | "cite" | "var" | "dfn" => b.italic = b.italic.saturating_sub(1),
                     "a" => b.link = None,
                     _ => {}
                 }
@@ -485,7 +536,11 @@ pub fn html_to_doc(html: &str, reader_view: bool) -> (Vec<Block>, Vec<String>) {
         }
     }
     b.flush();
-    (b.blocks, b.links)
+    let mut anchors = b.anchors;
+    for id in b.pending_ids {
+        anchors.insert(id, b.offset);
+    }
+    (b.blocks, b.links, anchors)
 }
 
 /// Plain text: paragraphs separated by blank lines (single newlines inside a paragraph are joined).
@@ -588,6 +643,10 @@ impl Book {
 
     pub fn open(path: &str) -> Result<Book, String> {
         let lower = path.to_lowercase();
+        if [".mobi", ".azw3", ".azw", ".prc"].iter().any(|e| lower.ends_with(e)) {
+            let m = crate::mobi::load(path)?;
+            return Ok(Book::from_blocks(&m.title, &m.author, m.chapters));
+        }
         if lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml") {
             let html = String::from_utf8_lossy(&std::fs::read(path).map_err(|e| e.to_string())?).into_owned();
             let toks = tokenize(&html);
@@ -728,9 +787,67 @@ impl Book {
         }
         let Some(path) = self.spine.get(i).cloned() else { return vec![] };
         match self.zip.as_mut().and_then(|z| z.read_string(&path)) {
-            Some(html) => html_to_blocks(&html),
-            None => vec![Block { kind: BlockKind::Para, runs: vec![Run { text: format!("(Could not read {path})"), bold: false, link: None }], start: 0 }],
+            Some(html) => {
+                // resolve image sources to zip paths; drop remote ones
+                let base = dir_of(&path);
+                html_to_blocks(&html).into_iter().filter_map(|mut b| {
+                    if b.kind == BlockKind::Image {
+                        let src = b.runs[0].text.clone();
+                        if src.contains("://") || src.starts_with("data:") {
+                            return None;
+                        }
+                        b.runs[0].text = resolve(&base, &src);
+                    }
+                    Some(b)
+                }).collect()
+            }
+            None => vec![Block { kind: BlockKind::Para, runs: vec![Run { text: format!("(Could not read {path})"), bold: false, italic: false, link: None }], start: 0 }],
         }
+    }
+
+    /// A chapter with links and anchors (EPUB only; other books have none).
+    pub fn chapter_doc(&mut self, i: usize) -> Doc {
+        let path = self.spine.get(i).cloned().unwrap_or_default();
+        let html = if self.mem.is_none() && self.text.is_none() { self.zip.as_mut().and_then(|z| z.read_string(&path)) } else { None };
+        match html {
+            Some(h) => {
+                let base = dir_of(&path);
+                let mut d = html_to_full(&h);
+                d.blocks.retain(|b| b.kind != BlockKind::Image || {
+                    let s = &b.runs[0].text;
+                    !(s.contains("://") || s.starts_with("data:"))
+                });
+                for b in d.blocks.iter_mut().filter(|b| b.kind == BlockKind::Image) {
+                    b.runs[0].text = resolve(&base, &b.runs[0].text);
+                }
+                d
+            }
+            None => Doc { blocks: self.chapter_blocks(i), links: vec![], anchors: HashMap::new() },
+        }
+    }
+
+    /// Resolve a link found in chapter `from` to (chapter index, fragment id).
+    pub fn resolve_link(&self, from: usize, href: &str) -> Option<(usize, Option<String>)> {
+        if href.contains("://") || href.starts_with("mailto:") {
+            return None;
+        }
+        let (file, frag) = match href.split_once('#') {
+            Some((f, g)) => (f, Some(g.to_string())),
+            None => (href, None),
+        };
+        let chapter = if file.is_empty() {
+            from
+        } else {
+            let base = dir_of(self.spine.get(from)?);
+            let target = resolve(&base, file);
+            self.spine.iter().position(|s| *s == target)?
+        };
+        Some((chapter, frag))
+    }
+
+    /// Raw bytes of a file inside the EPUB (images).
+    pub fn file(&mut self, path: &str) -> Option<Vec<u8>> {
+        self.zip.as_mut()?.read(path)
     }
 
     /// The cover image bytes (JPEG/PNG), if any.
@@ -772,6 +889,13 @@ mod tests {
         let blocks = html_to_blocks(html);
         let text: String = blocks[0].runs.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(text, "A B C");
+    }
+
+    #[test]
+    fn soft_hyphens_are_removed() {
+        let blocks = html_to_blocks("<body><p>ex\u{ad}pect ar&shy;gu&shy;ment</p></body>");
+        let text: String = blocks[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "expect argument");
     }
 
     #[test]

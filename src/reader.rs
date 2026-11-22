@@ -9,10 +9,39 @@ use crate::input::{Gesture, Kind};
 use crate::sys::Sys;
 use crate::ui::*;
 use std::collections::HashMap;
+use std::sync::Arc as Rc;
 use std::sync::{Arc, Mutex};
 
-const MARGIN_X: i32 = 36;
+const MARGIN_X: i32 = 36; // footer / chrome margin
 const MARGIN_TOP: i32 = 34;
+
+/// Reader layout preferences (margins, line spacing, hyphenation).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Layout {
+    pub margin: i32,
+    pub spacing: i32, // line height in % of the font size
+    pub hyphenate: bool,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout { margin: 36, spacing: 145, hyphenate: true }
+    }
+}
+
+pub const MARGINS: [(&str, i32); 3] = [("Narrow", 20), ("Normal", 36), ("Wide", 60)];
+pub const SPACINGS: [(&str, i32); 3] = [("Compact", 130), ("Normal", 145), ("Relaxed", 165)];
+
+impl Layout {
+    pub fn from_config(sys: &Sys) -> Layout {
+        let d = Layout::default();
+        Layout {
+            margin: sys.config.get("reader_margin").parse().unwrap_or(d.margin),
+            spacing: sys.config.get("reader_spacing").parse().unwrap_or(d.spacing),
+            hyphenate: sys.config.get("reader_hyphenate") != "no",
+        }
+    }
+}
 const FOOTER_H: i32 = 40;
 pub const FONT_SIZES: [u16; 6] = [16, 18, 20, 22, 24, 28];
 
@@ -26,6 +55,8 @@ struct Word {
 
 pub struct Line {
     words: Vec<Word>,
+    img: Option<Rc<crate::image::Gray>>,
+    lh: i32,
     y: i32,
     x0: i32,
     avail: i32,
@@ -65,29 +96,46 @@ fn style(kind: BlockKind, fs: u16) -> Style {
         BlockKind::Item => Style { indent: 0, left: f, justify: false, prefix: "• ", after: f / 4, ..base },
         BlockKind::Quote => Style { left: f * 3 / 2, indent: 0, size: fs * 19 / 20, ..base },
         BlockKind::Pre => Style { face: Face::Mono, size: fs * 17 / 20, indent: 0, justify: false, ..base },
-        BlockKind::Rule => Style { indent: 0, before: f / 2, after: f / 2, justify: false, ..base },
+        BlockKind::Rule | BlockKind::Image => Style { indent: 0, before: f / 2, after: f / 2, justify: false, ..base },
     }
 }
 
 /// Lay out a chapter's blocks into pages of the given area.
-pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect) -> Vec<Page> {
+/// Decoded, page-fitted images of a chapter, keyed by zip path.
+pub type Images = HashMap<String, Rc<crate::image::Gray>>;
+
+pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect, lay: Layout, images: &Images) -> Vec<Page> {
     let mut pages = vec![Page { lines: vec![], start: 0 }];
     let top = area.y0 + MARGIN_TOP;
     let bottom = area.y1 - FOOTER_H;
-    let width = area.w() - 2 * MARGIN_X;
+    let margin = lay.margin;
+    let width = area.w() - 2 * margin;
     let mut y = top;
     for (bi, b) in blocks.iter().enumerate() {
         let st = style(b.kind, fs);
-        let line_h = st.size as i32 * 145 / 100;
+        let line_h = st.size as i32 * lay.spacing / 100;
         if y > top {
             y += st.before;
+        }
+        if b.kind == BlockKind::Image {
+            let Some(img) = images.get(&b.runs[0].text) else { continue };
+            let h = img.h + 12;
+            if y > top && y + h > bottom {
+                pages.push(Page { lines: vec![], start: b.start });
+                y = top;
+            }
+            let x0 = area.x0 + (area.w() - img.w) / 2;
+            pages.last_mut().unwrap().lines.push(Line { words: vec![], img: Some(img.clone()), lh: h, y, x0, avail: img.w,
+                size: st.size, justify: false, center: false, rule: false });
+            y += h + 8;
+            continue;
         }
         if b.kind == BlockKind::Rule {
             if y + line_h > bottom {
                 pages.push(Page { lines: vec![], start: b.start });
                 y = top;
             }
-            pages.last_mut().unwrap().lines.push(Line { words: vec![], y, x0: area.x0 + MARGIN_X, avail: width,
+            pages.last_mut().unwrap().lines.push(Line { words: vec![], img: None, lh: line_h, y, x0: area.x0 + margin, avail: width,
                 size: st.size, justify: false, center: false, rule: true });
             y += line_h;
             continue;
@@ -104,7 +152,8 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect) -> Vec
             words.push(Word { text: st.prefix.trim_end().into(), face: st.face, w: fonts.width(st.prefix.trim_end(), st.face, st.size), offset: off, link: None });
         }
         for run in &b.runs {
-            let face = if st.face == Face::Mono { Face::Mono } else if run.bold { Face::Bold } else { st.face };
+            let face = if st.face == Face::Mono { Face::Mono } else if run.bold { Face::Bold }
+                       else if run.italic { Face::Italic } else { st.face };
             for (i, w) in run.text.split(' ').enumerate() {
                 if i > 0 {
                     off += 1;
@@ -124,7 +173,7 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect) -> Vec
         let mut first = true;
         while i < words.len() {
             let indent = if first && st.indent > 0 && bi > 0 { st.indent } else if !first { hang } else { 0 };
-            let x0 = area.x0 + MARGIN_X + st.left + indent;
+            let x0 = area.x0 + margin + st.left + indent;
             let avail = width - st.left - indent;
             let mut line_words = vec![];
             let mut used = 0;
@@ -151,6 +200,24 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect) -> Vec
                     words[i] = Word { text: tail, face, w: tw, offset: offset + cut, link };
                     break;
                 } else {
+                    // hyphenate the word that doesn't fit, if part of it does
+                    if lay.hyphenate && st.justify {
+                        let room = avail - used - space;
+                        let core: &str = w.text.trim_end_matches(|c: char| !c.is_alphanumeric());
+                        let chars: Vec<char> = core.chars().collect();
+                        for &p in crate::hyph::breaks(core).iter().rev() {
+                            let head: String = chars[..p].iter().collect::<String>() + "-";
+                            let hw = fonts.width(&head, w.face, st.size);
+                            if hw <= room {
+                                let tail: String = w.text.chars().skip(p).collect();
+                                let (face, offset, link) = (w.face, w.offset, w.link);
+                                let tw = fonts.width(&tail, face, st.size);
+                                line_words.push(Word { text: head, face, w: hw, offset, link });
+                                words[i] = Word { text: tail, face, w: tw, offset: offset + p, link };
+                                break;
+                            }
+                        }
+                    }
                     break;
                 }
             }
@@ -160,7 +227,7 @@ pub fn paginate(blocks: &[Block], fonts: &mut Fonts, fs: u16, area: Rect) -> Vec
                 y = top;
             }
             let last_line = i >= words.len();
-            pages.last_mut().unwrap().lines.push(Line { words: line_words, y, x0, avail, size: st.size,
+            pages.last_mut().unwrap().lines.push(Line { words: line_words, img: None, lh: line_h, y, x0, avail, size: st.size,
                 justify: st.justify && !last_line, center: st.center, rule: false });
             y += line_h;
             first = false;
@@ -186,6 +253,10 @@ pub fn draw_page(cx: &mut Ctx, page: &Page) -> PageGeom {
     let mut links: Vec<(Rect, u32)> = vec![];
     let mut words: Vec<(Rect, usize, String)> = vec![];
     for line in &page.lines {
+        if let Some(img) = &line.img {
+            cx.c.blit(&img.px, img.w, img.h, line.x0, line.y);
+            continue;
+        }
         if line.rule {
             let w = line.avail / 4;
             let x = line.x0 + (line.avail - w) / 2;
@@ -209,7 +280,7 @@ pub fn draw_page(cx: &mut Ctx, page: &Page) -> PageGeom {
                 gap = g;
             }
         }
-        let lh = line.size as i32 * 145 / 100;
+        let lh = line.lh;
         for w in &line.words {
             let wx = x.round() as i32;
             cx.c.text(cx.f, wx, line.y, &w.text, w.face, line.size, BLACK, Anchor::LT);
@@ -264,10 +335,16 @@ pub struct Reader {
     pages: Vec<Page>,
     page: usize,
     fs: u16,
-    laid_out: Option<(usize, u16, Rect)>,
+    layout: Layout,
+    laid_out: Option<(usize, u16, Rect, Layout)>,
     want_offset: Option<usize>,
     want_last: bool,
-    pick: Arc<Mutex<Option<usize>>>,
+    pick: Arc<Mutex<Option<(usize, usize)>>>,
+    /// link targets of the current chapter and where they are on the page
+    links: Vec<String>,
+    link_boxes: Vec<(Rect, u32)>,
+    /// footnote target waiting for "Go there"
+    note_target: Option<(usize, usize)>,
     /// HTML to keep if the user picks "Save for later" (articles, web pages)
     save_html: Option<String>,
     words: Vec<(Rect, usize, String)>,
@@ -280,7 +357,11 @@ pub struct Reader {
 #[derive(Clone, Copy)]
 enum MenuAct {
     Chapters,
+    Bookmark,
+    Bookmarks,
+    Search,
     FontSize,
+    Layout,
     SaveForLater,
     KOReader,
     Library,
@@ -289,6 +370,10 @@ enum MenuAct {
 
 const ID_WORD: u32 = 4;
 const TAG_WORD: u32 = 3;
+const TAG_LAYOUT: u32 = 4;
+const TAG_NOTE: u32 = 5;
+const TAG_SEARCH: u32 = 6;
+const ID_LINK: u32 = 0x4000_0000;
 const ID_PREV: u32 = 1;
 const ID_NEXT: u32 = 2;
 const ID_MENU: u32 = 3;
@@ -305,10 +390,132 @@ impl Reader {
         let fs = sys.config.get("reader_font").parse().unwrap_or(20);
         let (chapter, offset) = load_positions(sys).get(key).copied().unwrap_or((0, 0));
         let chapter = chapter.min(book.spine.len().saturating_sub(1));
-        Reader { path: key.into(), book, chapter, pages: vec![], page: 0, fs, laid_out: None,
-                 want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), save_html: None,
+        Reader { path: key.into(), book, chapter, pages: vec![], page: 0, fs, layout: Layout::from_config(sys), laid_out: None,
+                 want_offset: Some(offset), want_last: false, pick: Arc::new(Mutex::new(None)), links: vec![],
+                 link_boxes: vec![], note_target: None, save_html: None,
                  words: vec![], sel_word: None, define_job: None, last_turn: std::time::Instant::now(),
                  menu: vec![] }
+    }
+
+    /// Go to a chapter and character offset.
+    fn jump(&mut self, chapter: usize, offset: usize) {
+        self.chapter = chapter.min(self.book.spine.len().saturating_sub(1));
+        self.laid_out = None;
+        self.want_offset = Some(offset);
+        self.want_last = false;
+        self.page = 0;
+    }
+
+    fn bookmarks_path(sys: &Sys) -> String {
+        format!("{}/kos/book-bookmarks.txt", sys.us)
+    }
+
+    /// This book's bookmarks: (chapter, offset, label).
+    fn bookmarks(&self, sys: &Sys) -> Vec<(usize, usize, String)> {
+        std::fs::read_to_string(Self::bookmarks_path(sys)).unwrap_or_default().lines().filter_map(|l| {
+            let p: Vec<&str> = l.splitn(4, '\t').collect();
+            (p.len() == 4 && p[0] == self.path).then(|| Some((p[1].parse().ok()?, p[2].parse().ok()?, p[3].to_string())))
+                .flatten()
+        }).collect()
+    }
+
+    fn page_range(&self) -> (usize, usize) {
+        let start = self.start_offset();
+        let end = self.pages.get(self.page + 1).map_or(usize::MAX, |p| p.start);
+        (start, end)
+    }
+
+    fn is_bookmarked(&self, sys: &Sys) -> bool {
+        let (s, e) = self.page_range();
+        self.bookmarks(sys).iter().any(|(c, o, _)| *c == self.chapter && *o >= s && *o < e)
+    }
+
+    /// Add or remove a bookmark on the current page; returns true if one was added.
+    fn toggle_bookmark(&self, sys: &Sys) -> bool {
+        let path = Self::bookmarks_path(sys);
+        let all = std::fs::read_to_string(&path).unwrap_or_default();
+        let (s, e) = self.page_range();
+        let mut removed = false;
+        let mut kept: Vec<String> = vec![];
+        for l in all.lines() {
+            let p: Vec<&str> = l.splitn(4, '\t').collect();
+            let here = p.len() == 4 && p[0] == self.path && p[1].parse::<usize>().ok() == Some(self.chapter)
+                && p[2].parse::<usize>().map_or(false, |o| o >= s && o < e);
+            if here {
+                removed = true;
+            } else {
+                kept.push(l.to_string());
+            }
+        }
+        if !removed {
+            let label: String = self.words.iter().take(10).map(|w| w.2.as_str()).collect::<Vec<_>>().join(" ");
+            kept.push(format!("{}\t{}\t{}\t{}", self.path, self.chapter, s, label.replace('\t', " ")));
+        }
+        let _ = std::fs::create_dir_all(format!("{}/kos", sys.us));
+        let _ = std::fs::write(&path, kept.join("\n") + "\n");
+        !removed
+    }
+
+    /// Case-insensitive search through every chapter: (snippet, chapter title, chapter, offset).
+    fn search(&mut self, q: &str) -> Vec<(String, String, usize, usize)> {
+        let mut out = vec![];
+        let qn = q.chars().count();
+        'outer: for ch in 0..self.book.spine.len() {
+            let blocks = self.book.chapter_blocks(ch);
+            let title = self.book.chapter_title(ch);
+            for b in blocks.iter().filter(|b| b.kind != BlockKind::Image) {
+                let text: String = b.runs.iter().map(|r| r.text.as_str()).collect();
+                let chars: Vec<char> = text.chars().collect();
+                let lower: Vec<char> = text.to_lowercase().chars().collect();
+                if lower.len() != chars.len() {
+                    continue; // rare case-mapping length change: skip rather than misplace
+                }
+                let qc: Vec<char> = q.chars().collect();
+                let mut i = 0;
+                while i + qn <= lower.len() {
+                    if lower[i..i + qn] == qc[..] {
+                        let s = i.saturating_sub(30);
+                        let e = (i + qn + 40).min(chars.len());
+                        let snippet = format!("{}{}{}", if s > 0 { "…" } else { "" },
+                                              chars[s..e].iter().collect::<String>(), if e < chars.len() { "…" } else { "" });
+                        out.push((snippet, title.clone(), ch, b.start + i));
+                        if out.len() >= 200 {
+                            break 'outer;
+                        }
+                        i += qn;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Tap on a link: short targets (footnotes) pop up; others (table of contents) jump.
+    fn follow_link(&mut self, idx: usize) -> Cmd {
+        let Some(href) = self.links.get(idx).cloned() else { return Cmd::None };
+        let Some((ch, frag)) = self.book.resolve_link(self.chapter, &href) else {
+            return Cmd::Toast("Web links open in the Web app".into());
+        };
+        let doc = self.book.chapter_doc(ch);
+        let off = frag.as_ref().and_then(|f| doc.anchors.get(f).copied()).unwrap_or(0);
+        let block = doc.blocks.iter().filter(|b| b.kind != BlockKind::Image).find(|b| b.start + b.chars() > off);
+        let text: String = block.map(|b| b.runs.iter().map(|r| r.text.as_str()).collect()).unwrap_or_default();
+        if frag.is_some() && !text.is_empty() && text.chars().count() < 700 {
+            self.note_target = Some((ch, off));
+            return Cmd::Dialog(Dialog::confirm(TAG_NOTE, "Note", &text, "Go there"));
+        }
+        self.jump(ch, off);
+        Cmd::Full
+    }
+
+    fn layout_menu(&self) -> Cmd {
+        let m = MARGINS.iter().find(|x| x.1 == self.layout.margin).map_or("Normal", |x| x.0);
+        let s = SPACINGS.iter().find(|x| x.1 == self.layout.spacing).map_or("Normal", |x| x.0);
+        Cmd::Dialog(Dialog::menu(TAG_LAYOUT, "Layout", vec![
+            format!("Margins: {m}"), format!("Line spacing: {s}"),
+            format!("Hyphenation: {}", if self.layout.hyphenate { "on" } else { "off" }), "Done".into()]))
     }
 
     pub fn set_save_html(&mut self, html: String) {
@@ -410,10 +617,28 @@ impl App for Reader {
         true
     }
 
-    fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
-        if self.laid_out != Some((self.chapter, self.fs, a)) {
-            let blocks = self.book.chapter_blocks(self.chapter);
-            self.pages = paginate(&blocks, cx.f, self.fs, a);
+    fn render(&mut self, cx: &mut Ctx, a: Rect, sys: &mut Sys) {
+        if self.laid_out != Some((self.chapter, self.fs, a, self.layout)) {
+            let doc = self.book.chapter_doc(self.chapter);
+            self.links = doc.links;
+            let blocks = doc.blocks;
+            let (max_w, max_h) = (a.w() - 2 * self.layout.margin, a.h() - MARGIN_TOP - FOOTER_H - 10);
+            let mut images: Images = HashMap::new();
+            for b in blocks.iter().filter(|b| b.kind == BlockKind::Image) {
+                let p = &b.runs[0].text;
+                if images.contains_key(p) {
+                    continue;
+                }
+                if let Some(g) = self.book.file(p).and_then(|bytes| crate::image::decode(&bytes).ok()) {
+                    if g.w >= 24 && g.h >= 24 {
+                        // never upscale small images more than 2x; always fit the page
+                        let s = (max_w as f32 / g.w as f32).min(max_h as f32 / g.h as f32).min(2.0);
+                        let fitted = crate::image::resize(&g, (g.w as f32 * s) as i32, (g.h as f32 * s) as i32);
+                        images.insert(p.clone(), Rc::new(fitted));
+                    }
+                }
+            }
+            self.pages = paginate(&blocks, cx.f, self.fs, a, self.layout, &images);
             self.page = if self.want_last {
                 self.pages.len() - 1
             } else if let Some(off) = self.want_offset.take() {
@@ -422,10 +647,20 @@ impl App for Reader {
                 self.page.min(self.pages.len() - 1)
             };
             self.want_last = false;
-            self.laid_out = Some((self.chapter, self.fs, a));
+            self.laid_out = Some((self.chapter, self.fs, a, self.layout));
         }
         if let Some(p) = self.pages.get(self.page) {
-            self.words = draw_page(cx, p).words;
+            let geom = draw_page(cx, p);
+            self.words = geom.words;
+            self.link_boxes = geom.links;
+            // bookmark ribbon
+            if self.is_bookmarked(sys) {
+                let x = a.x1 - 44;
+                cx.c.fill(Rect::new(x, a.y0, x + 22, a.y0 + 34), BLACK);
+                for k in 0..10 {
+                    cx.c.fill(Rect::new(x + 11 - k, a.y0 + 34 - 10 + k, x + 11 + k + 1, a.y0 + 34 - 10 + k + 1), WHITE);
+                }
+            }
         }
         // footer: chapter title, page within chapter, book progress
         let fy = a.y1 - FOOTER_H / 2 - 2;
@@ -440,14 +675,23 @@ impl App for Reader {
         cx.hit(Rect::new(a.x0, a.y0, a.x1, a.y1), Hit::App(ID_NEXT), Some(Hit::App(ID_WORD)), "next page");
         cx.hit(Rect::new(a.x0, a.y0, a.x0 + third, a.y1), Hit::App(ID_PREV), Some(Hit::App(ID_WORD)), "previous page");
         cx.hit(Rect::new(a.x0 + third, a.y0, a.x1 - third, a.y0 + a.h() / 6), Hit::App(ID_MENU), None, "menu");
+        for (r, l) in &self.link_boxes {
+            // small note markers are hard to hit: give them at least 44 px
+            let pad_x = ((44 - r.w()) / 2).max(0);
+            let pad_y = ((44 - r.h()) / 2).max(0);
+            let rr = Rect::new(r.x0 - pad_x, r.y0 - pad_y, r.x1 + pad_x, r.y1 + pad_y);
+            cx.hit(rr, Hit::App(ID_LINK | *l), Some(Hit::App(ID_WORD)), "book-link");
+        }
     }
 
     fn action(&mut self, id: u32, _long: bool, sys: &mut Sys) -> Cmd {
         match id {
+            l if l & ID_LINK != 0 => self.follow_link((l & !ID_LINK) as usize),
             ID_NEXT => self.next(sys),
             ID_PREV => self.prev(sys),
             ID_MENU => {
-                self.menu = vec![MenuAct::Chapters, MenuAct::FontSize];
+                self.menu = vec![MenuAct::Chapters, MenuAct::Bookmark, MenuAct::Bookmarks, MenuAct::Search,
+                                 MenuAct::FontSize, MenuAct::Layout];
                 // in-memory articles can be saved; real book files can be opened in KOReader instead
                 if self.save_html.is_some() {
                     self.menu.push(MenuAct::SaveForLater);
@@ -455,14 +699,23 @@ impl App for Reader {
                     self.menu.push(MenuAct::KOReader);
                 }
                 self.menu.extend([MenuAct::Library, MenuAct::Close]);
+                let marked = self.is_bookmarked(sys);
+                let nbm = self.bookmarks(sys).len();
                 let items: Vec<String> = self.menu.iter().map(|m| match m {
+                    MenuAct::Bookmark => if marked { "Remove bookmark".to_string() } else { "Bookmark this page".to_string() },
+                    MenuAct::Bookmarks => format!("Bookmarks ({nbm})"),
+                    MenuAct::Search => "Search in book".to_string(),
+                    other => match other {
                     MenuAct::Chapters => "Chapters",
                     MenuAct::FontSize => "Font size",
+                    MenuAct::Layout => "Layout: margins, spacing",
                     MenuAct::SaveForLater => "Save for later",
                     MenuAct::KOReader => "Open in KOReader",
                     MenuAct::Library => "Back to library",
                     MenuAct::Close => "Close menu",
-                }.to_string()).collect();
+                    _ => "",
+                    }.to_string(),
+                }).collect();
                 let heading = if self.book.author.is_empty() { self.book.title.clone() }
                               else { format!("{} · {}", self.book.title, self.book.author) };
                 Cmd::Dialog(Dialog::menu(TAG_MENU, &heading, items))
@@ -503,9 +756,23 @@ impl App for Reader {
         match (tag, choice) {
             (TAG_MENU, _) => match act {
                 Some(MenuAct::Chapters) => {
-                    let items: Vec<(String, usize)> = self.book.toc.iter().map(|c| (c.title.clone(), c.spine)).collect();
-                    Cmd::Push(Box::new(Chapters::new(self.book.title.clone(), items, self.chapter, self.pick.clone())))
+                    let items: Vec<(String, String, usize, usize)> =
+                        self.book.toc.iter().map(|c| (c.title.clone(), String::new(), c.spine, 0)).collect();
+                    let mark = items.iter().rposition(|i| i.2 <= self.chapter);
+                    Cmd::Push(Box::new(JumpList::new(format!("Chapters · {}", self.book.title), items, mark,
+                                                     self.pick.clone(), "No chapters")))
                 }
+                Some(MenuAct::Bookmark) => {
+                    let on = self.toggle_bookmark(sys);
+                    Cmd::Batch(vec![Cmd::Full, Cmd::Toast(if on { "Bookmarked".into() } else { "Bookmark removed".into() })])
+                }
+                Some(MenuAct::Bookmarks) => {
+                    let items: Vec<(String, String, usize, usize)> = self.bookmarks(sys).into_iter()
+                        .map(|(c, o, label)| (label, self.book.chapter_title(c), c, o)).collect();
+                    Cmd::Push(Box::new(JumpList::new("Bookmarks".into(), items, None, self.pick.clone(),
+                                                     "No bookmarks yet")))
+                }
+                Some(MenuAct::Search) => Cmd::Dialog(Dialog::input(TAG_SEARCH, "Search in book", "", "Search")),
                 Some(MenuAct::FontSize) => Cmd::Dialog(Dialog::menu(TAG_FONT, "Font size",
                     FONT_SIZES.iter().map(|s| format!("{s} px{}", if *s == self.fs { "  ✓" } else { "" })).collect())),
                 Some(MenuAct::SaveForLater) => {
@@ -521,6 +788,7 @@ impl App for Reader {
                     self.save(sys);
                     open_koreader(sys, Some(&self.path.clone()))
                 }
+                Some(MenuAct::Layout) => self.layout_menu(),
                 Some(MenuAct::Library) => Cmd::Pop,
                 Some(MenuAct::Close) | None => Cmd::Full,
             },
@@ -555,6 +823,45 @@ impl App for Reader {
                 Cmd::Toast("Highlighted".into())
             }
             (TAG_WORD, _) => Cmd::None,
+            (TAG_NOTE, _) => match self.note_target.take() {
+                Some((c, off)) => {
+                    self.jump(c, off);
+                    Cmd::Full
+                }
+                None => Cmd::None,
+            },
+            (TAG_SEARCH, _) => {
+                let q = _t.trim().to_lowercase();
+                if q.chars().count() < 2 {
+                    return Cmd::None;
+                }
+                let hits = self.search(&q);
+                let title = format!("“{}” · {} found", _t.trim(), hits.len());
+                Cmd::Push(Box::new(JumpList::new(title, hits, None, self.pick.clone(), "Not found")))
+            }
+            (TAG_LAYOUT, i) if i < 3 => {
+                // each tap cycles the option; keep the reading position across re-layout
+                self.want_offset = Some(self.start_offset());
+                match i {
+                    0 => {
+                        let k = MARGINS.iter().position(|x| x.1 == self.layout.margin).unwrap_or(1);
+                        self.layout.margin = MARGINS[(k + 1) % MARGINS.len()].1;
+                        sys.config.set("reader_margin", &self.layout.margin.to_string());
+                    }
+                    1 => {
+                        let k = SPACINGS.iter().position(|x| x.1 == self.layout.spacing).unwrap_or(1);
+                        self.layout.spacing = SPACINGS[(k + 1) % SPACINGS.len()].1;
+                        sys.config.set("reader_spacing", &self.layout.spacing.to_string());
+                    }
+                    _ => {
+                        self.layout.hyphenate = !self.layout.hyphenate;
+                        sys.config.set("reader_hyphenate", if self.layout.hyphenate { "yes" } else { "no" });
+                    }
+                }
+                self.laid_out = None;
+                Cmd::Batch(vec![Cmd::Full, self.layout_menu()])
+            }
+            (TAG_LAYOUT, _) => Cmd::Full,
             _ => Cmd::Full,
         }
     }
@@ -576,9 +883,9 @@ impl App for Reader {
 
     fn on_show(&mut self, sys: &mut Sys) {
         let picked = self.pick.lock().unwrap().take();
-        if let Some(c) = picked {
-            self.goto_chapter(c, false);
-            save_position(sys, &self.path, c, 0);
+        if let Some((c, off)) = picked {
+            self.jump(c, off);
+            save_position(sys, &self.path, c, off);
         }
     }
 
@@ -589,43 +896,48 @@ impl App for Reader {
     }
 }
 
-// --- Chapter list -------------------------------------------------------------------------------
-pub struct Chapters {
+// --- Jump list: chapters, bookmarks, search results -----------------------------------------------
+pub struct JumpList {
     title: String,
-    items: Vec<(String, usize)>,
-    current: usize,
+    items: Vec<(String, String, usize, usize)>, // (label, sub-label, chapter, offset)
+    mark: Option<usize>,
     pager: Pager,
-    pick: Arc<Mutex<Option<usize>>>,
+    pick: Arc<Mutex<Option<(usize, usize)>>>,
+    empty: &'static str,
 }
 
-impl Chapters {
-    fn new(title: String, items: Vec<(String, usize)>, current: usize, pick: Arc<Mutex<Option<usize>>>) -> Chapters {
-        let mut pager = Pager::new(60);
-        // open on the page containing the current chapter (approx. 10 rows per page)
-        let idx = items.iter().rposition(|(_, s)| *s <= current).unwrap_or(0);
-        pager.page = idx / 10;
-        Chapters { title, items, current, pager, pick }
+impl JumpList {
+    fn new(title: String, items: Vec<(String, String, usize, usize)>, mark: Option<usize>,
+           pick: Arc<Mutex<Option<(usize, usize)>>>, empty: &'static str) -> JumpList {
+        let mut pager = Pager::new(64);
+        pager.page = mark.unwrap_or(0) / 10; // open near the marked entry (about 10 rows per page)
+        JumpList { title, items, mark, pager, pick, empty }
     }
 }
 
-impl App for Chapters {
+impl App for JumpList {
     fn title(&self) -> String {
-        format!("Chapters · {}", self.title)
+        self.title.clone()
     }
 
     fn render(&mut self, cx: &mut Ctx, a: Rect, _sys: &mut Sys) {
         let items = &self.items;
-        let current = self.current;
-        let cur_idx = items.iter().rposition(|(_, s)| *s <= current);
-        self.pager.render(cx, Rect::new(a.x0, a.y0 + 8, a.x1, a.y1), items.len(), "No chapters", |cx, r, i| {
-            let here = Some(i) == cur_idx;
+        let mark = self.mark;
+        self.pager.render(cx, Rect::new(a.x0, a.y0 + 8, a.x1, a.y1), items.len(), self.empty, |cx, r, i| {
+            let here = Some(i) == mark;
             let face = if here { Face::Bold } else { Face::Sans };
-            let t = cx.ellipsize(&items[i].0, face, 21, r.w() - 70);
-            cx.c.text(cx.f, r.x0 + 24, r.cy(), &t, face, 21, BLACK, Anchor::LM);
+            let (label, sub) = (&items[i].0, &items[i].1);
+            let y = if sub.is_empty() { r.cy() } else { r.y0 + 20 };
+            let t = cx.ellipsize(label, face, 20, r.w() - 70);
+            cx.c.text(cx.f, r.x0 + 24, y, &t, face, 20, BLACK, Anchor::LM);
+            if !sub.is_empty() {
+                let st = cx.ellipsize(sub, Face::Sans, 14, r.w() - 70);
+                cx.text(r.x0 + 24, r.y0 + 46, &st, 14, DARK, Anchor::LM);
+            }
             if here {
                 cx.text(r.x1 - 24, r.cy(), "◀", 18, BLACK, Anchor::RM);
             }
-            cx.hit(r, Hit::App(i as u32), None, &items[i].0);
+            cx.hit(r, Hit::App(i as u32), None, label);
         });
     }
 
@@ -633,8 +945,8 @@ impl App for Chapters {
         if self.pager.action(id) {
             return Cmd::Redraw;
         }
-        if let Some((_, spine)) = self.items.get(id as usize) {
-            *self.pick.lock().unwrap() = Some(*spine);
+        if let Some((_, _, ch, off)) = self.items.get(id as usize) {
+            *self.pick.lock().unwrap() = Some((*ch, *off));
             return Cmd::Pop;
         }
         Cmd::None

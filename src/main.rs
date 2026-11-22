@@ -14,9 +14,11 @@ mod fb;
 mod games;
 mod getbooks;
 mod highlights;
+mod hyph;
 mod image;
 mod input;
 mod json;
+mod mobi;
 mod news;
 mod reader;
 mod screensaver;
@@ -722,6 +724,81 @@ fn sim_main(out: &str) -> i32 {
         s.tap("Next ▶");
     }
     s.tap("⌂");
+    // --- reader features: italics, images, footnotes, search, bookmarks, layout ---
+    {
+        let us = s.m.sys.us.clone();
+        s.m.sys.config.set("reader_font", "20");
+        let _ = std::fs::remove_file(format!("{us}/kos/reading.txt"));
+        let sample = format!("{us}/documents/A Sample Book.epub");
+        let r = reader::Reader::open(&sample, &s.m.sys).expect("sample");
+        s.m.ui.push(Box::new(r), &mut s.m.sys);
+        s.shot("reader-typography");
+        if s.tap_nth("book-link", 0) {
+            s.shot("reader-footnote");
+            s.dismiss();
+            if s.m.ui.find_label("Cancel").is_some() {
+                s.tap("Cancel");
+            }
+        }
+        s.tap("next page");
+        s.shot("reader-image");
+        s.tap("menu");
+        s.tap("Bookmark this page");
+        s.tap("menu");
+        s.tap("Search in book");
+        s.typ("lanterns");
+        s.tap("Search");
+        s.shot("reader-search");
+        s.tap("‹");
+        s.tap("menu");
+        s.tap("Bookmarks");
+        s.shot("reader-bookmarks");
+        s.tap("‹");
+        s.tap("menu");
+        s.tap("Layout");
+        s.shot("reader-layout");
+        s.tap("Done");
+        s.tap("menu");
+        s.tap("Back to library");
+        let tm = format!("{us}/documents/The Time Machine - H. G. Wells.epub");
+        if std::path::Path::new(&tm).exists() {
+            let r = reader::Reader::open(&tm, &s.m.sys).expect("time machine");
+            s.m.ui.push(Box::new(r), &mut s.m.sys);
+            s.shot("reader-real-cover");
+            for _ in 0..4 {
+                s.tap("next page");
+            }
+            s.shot("reader-real-text");
+            s.tap("menu");
+            s.tap("Back to library");
+        }
+    }
+    // --- a real DRM-free AZW3 (KF8) from Standard Ebooks ---
+    {
+        let dest = format!("{}/documents/The Time Machine (Kindle).azw3", s.m.sys.us);
+        let ok = std::process::Command::new("curl").args(["-sSfL", "-m", "60", "-o", &dest,
+            "https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/h-g-wells_the-time-machine.azw3?source=feed"])
+            .status().map_or(false, |st| st.success());
+        println!("azw3 download: {ok}");
+        if ok {
+            match reader::Reader::open(&dest, &s.m.sys) {
+                Ok(r) => {
+                    s.m.ui.push(Box::new(r), &mut s.m.sys);
+                    for _ in 0..3 {
+                        s.tap("next page");
+                    }
+                    s.shot("reader-azw3");
+                    s.tap("menu");
+                    s.tap("Chapters");
+                    s.shot("reader-azw3-chapters");
+                    s.tap("‹");
+                    s.tap("menu");
+                    s.tap("Back to library");
+                }
+                Err(e) => println!("azw3 open failed: {e}"),
+            }
+        }
+    }
     // --- fun apps ---
     // Highlights: long-press a word in the reader, then "Highlight sentence"
     let sample = format!("{}/documents/A Sample Book.epub", s.m.sys.us);

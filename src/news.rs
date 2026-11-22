@@ -138,7 +138,7 @@ pub fn article_reader(it: &Item, page: Option<String>, sys: &Sys) -> Result<Read
         return Err("This article has no readable text.".into());
     }
     blocks.insert(0, crate::epub::Block { kind: crate::epub::BlockKind::Heading(1),
-        runs: vec![crate::epub::Run { text: it.title.clone(), bold: true, link: None }], start: 0 });
+        runs: vec![crate::epub::Run { text: it.title.clone(), bold: true, italic: false, link: None }], start: 0 });
     let book = Book::from_blocks(&it.title, "", vec![(it.title.clone(), blocks)]);
     let mut r = Reader::with_book(book, &format!("news:{}", it.link), sys);
     r.set_save_html(source_html);

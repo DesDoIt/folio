@@ -35,7 +35,7 @@ fn split_sections(title: &str, html: &str) -> Vec<(String, Vec<Block>)> {
     let (blocks, _) = html_to_doc(html, false);
     let mut chapters: Vec<(String, Vec<Block>)> = vec![("Introduction".into(), vec![Block {
         kind: BlockKind::Heading(1),
-        runs: vec![crate::epub::Run { text: title.into(), bold: true, link: None }], start: 0 }])];
+        runs: vec![crate::epub::Run { text: title.into(), bold: true, italic: false, link: None }], start: 0 }])];
     for b in blocks {
         let text: String = b.runs.iter().map(|r| r.text.as_str()).collect();
         // drop edit links and reference clutter
