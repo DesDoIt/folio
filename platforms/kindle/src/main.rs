@@ -816,6 +816,12 @@ fn sim_main(out: &str) -> i32 {
             s.close_reader();
         }
     }
+    // a device-search source (Wikisource), added alongside the classic two
+    s.tap("In: All sources ▾");
+    s.tap("Wikisource");
+    s.wait_idle(60);
+    s.shot("getbooks-wikisource");
+    s.dismiss();
     s.tap("⌂");
     // library views: covers (with the downloaded book's real cover) and the list
     s.tap("Books");

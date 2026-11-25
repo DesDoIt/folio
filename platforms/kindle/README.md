@@ -46,8 +46,11 @@ Rendered by the built-in simulator ([`tools/screenshots.sh`](tools/screenshots.s
 - **PDF, DjVu and comics (CBZ/CBR)**: a page reader with white margins trimmed automatically, a
   "fit width" mode that shows small print at full width in screen-sized parts, contents (PDF bookmarks),
   go to page, and the first page as the cover in your library (rendered with MuPDF and DjVuLibre)
-- **Get Books**: one search across Standard Ebooks and Project Gutenberg, with the source as a filter
-  (results mixed, best editions first, duplicates dropped); your own **OPDS catalogs** (Calibre's
+- **Get Books**: one search across Standard Ebooks, Project Gutenberg, Wikisource, the Internet
+  Archive and — public domain under other countries' terms — Project Gutenberg Australia and Faded
+  Page (Canada), with the source as a filter (results mixed, closest matches first, duplicates
+  dropped; a slow source is reported, not waited for). Gutenberg Australia and Faded Page keep their
+  whole book list on the device, refreshed weekly. Plus your own **OPDS catalogs** (Calibre's
   content server, other home library servers; optional login), or download any EPUB link; each download shows a
   progress bar on its book, and several can run at once
 - **Progress sync** with a KOReader-compatible sync server (KOReader's public one or your own): continue a book on your
