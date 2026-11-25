@@ -1,0 +1,14 @@
+[package]
+name = "uniffi-bindgen"
+description = "Generates the Kotlin/Swift sources for engine-ffi (cargo run -p uniffi-bindgen -- generate ...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "main.rs"
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }
