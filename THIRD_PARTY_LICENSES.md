@@ -95,10 +95,10 @@ Folio fetches data from these services only when you use the related feature:
 - **Wikisource** (search through the MediaWiki API, EPUBs from the Wikisource export service
   ws-export.wmcloud.org): public-domain works; transcriptions and Wikisource's additions under
   CC BY-SA 4.0. The exported EPUB carries its own credits page.
-- **Project Gutenberg Australia**, **Faded Page** (Canada) and the **Internet Archive** (Android; each
-  can be turned off): books in the public domain in Australia or Canada, or in the US by publication date or
-  as marked by the uploader. Their terms may differ from your country's; Folio says so where you turn
-  them on.
+- **Project Gutenberg Australia**, **Faded Page** (Canada) and the **Internet Archive**: books in the
+  public domain in Australia or Canada, or in the US by publication date or as marked by the uploader.
+  Their terms may differ from your country's. On Android each can be turned off; on Folio OS they are
+  sources in the Get Books filter.
 - **OPDS catalogs** you add yourself (e.g. your Calibre server).
 
 ## Screenshots (`platforms/kindle/screenshots/`, `platforms/android/screenshots/`)

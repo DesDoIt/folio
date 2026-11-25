@@ -1,6 +1,7 @@
 //! Get Books: browse/search free ebook catalogs and download EPUBs into documents/.
-//! Sources: Project Gutenberg (search via Gutendex, files from gutenberg.org or its mirror)
-//! and Standard Ebooks (public Atom feeds). Network access goes through `curl`.
+//! Sources: Standard Ebooks and Project Gutenberg, Wikisource and the Internet Archive (searched
+//! online), and Project Gutenberg Australia and Faded Page (whole book list kept on the device and
+//! searched there). All are parsed by the shared engine; network access goes through `curl`.
 
 use crate::apps::open_book;
 use crate::canvas::*;
@@ -16,20 +17,31 @@ const UA: &str = "Folio/0.2 (e-reader)";
 use engine::books::{self, Found as Item};
 
 /// The source filter: everything (searched together, results mixed by the shared engine), or one.
+/// Wikisource and the Internet Archive need a search; Gutenberg Australia and Faded Page keep their
+/// whole book list on the device (downloaded once, refreshed weekly) and search it there.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
     All,
     StandardEbooks,
     Gutenberg,
+    Wikisource,
+    GutenbergAustralia,
+    FadedPage,
+    InternetArchive,
 }
 
 impl Source {
-    const ALL: [Source; 3] = [Source::All, Source::StandardEbooks, Source::Gutenberg];
+    const ALL: [Source; 7] = [Source::All, Source::StandardEbooks, Source::Gutenberg, Source::Wikisource,
+                              Source::GutenbergAustralia, Source::FadedPage, Source::InternetArchive];
     fn label(self) -> &'static str {
         match self {
             Source::All => "All sources",
             Source::StandardEbooks => "Standard Ebooks",
             Source::Gutenberg => "Project Gutenberg",
+            Source::Wikisource => "Wikisource",
+            Source::GutenbergAustralia => "Gutenberg Australia",
+            Source::FadedPage => "Faded Page",
+            Source::InternetArchive => "Internet Archive",
         }
     }
 }
@@ -159,26 +171,57 @@ fn download_inner(urls: &[String], dest: &str) -> Result<(), String> {
     Err(last)
 }
 
+/// How long to wait for all sources together before showing what arrived (a slow one is reported, not
+/// waited for). A source kept on the device may still be downloading its book list the first time; its
+/// download carries on in the background, so the next search finds it.
+const ALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Every source at once, fetched in parallel and mixed by the shared engine (as on the phone):
-/// alternating, Standard Ebooks first, later copies of the same book dropped.
-fn search_all(q: Option<String>) -> Job {
-    let q2 = q.clone();
-    let se = std::thread::spawn(move || standard_ebooks(q2.as_deref()));
-    let pg = gutenberg(q.as_deref());
-    let se = se.join().unwrap_or_else(|_| Err("Standard Ebooks failed".into()));
-    let mut missing = vec![];
-    let mut lists = vec![];
-    for (name, r) in [("Standard Ebooks", se), ("Project Gutenberg", pg)] {
-        match r {
-            Ok(v) => lists.push(v),
-            Err(e) => missing.push((name, e)),
+/// closest matches first, Standard Ebooks first on ties, later copies of the same book dropped.
+fn search_all(q: Option<String>, cache: String) -> Job {
+    type Fetch = Box<dyn FnOnce() -> Result<Vec<Item>, String> + Send>;
+    let sources: Vec<(&str, Fetch)> = vec![
+        ("Standard Ebooks", { let q = q.clone(); Box::new(move || standard_ebooks(q.as_deref())) }),
+        ("Project Gutenberg", { let q = q.clone(); Box::new(move || gutenberg(q.as_deref())) }),
+        ("Wikisource", { let q = q.clone(); Box::new(move || wikisource(q.as_deref())) }),
+        ("Gutenberg Australia", { let (q, c) = (q.clone(), cache.clone()); Box::new(move || gutenberg_australia(&c, q.as_deref())) }),
+        ("Faded Page", { let (q, c) = (q.clone(), cache.clone()); Box::new(move || faded_page(&c, q.as_deref())) }),
+        ("Internet Archive", { let q = q.clone(); Box::new(move || internet_archive(q.as_deref())) }),
+    ];
+    // the merge wants the lists in this order (Standard Ebooks first); build it once the threads answer
+    let order: Vec<&str> = sources.iter().map(|(n, _)| *n).collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    for (name, f) in sources {
+        let tx = tx.clone();
+        std::thread::spawn(move || { let _ = tx.send((name, f())); });
+    }
+    drop(tx);
+
+    let mut got: std::collections::HashMap<&str, Result<Vec<Item>, String>> = std::collections::HashMap::new();
+    let deadline = std::time::Instant::now() + ALL_DEADLINE;
+    while got.len() < order.len() {
+        let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) else { break };
+        match rx.recv_timeout(wait) {
+            Ok((name, r)) => { got.insert(name, r); }
+            Err(_) => break, // the deadline passed; show what we have
+        }
+    }
+
+    let (mut lists, mut missing, mut first_err) = (vec![], vec![], None);
+    for name in &order {
+        match got.remove(name) {
+            Some(Ok(v)) if !v.is_empty() => lists.push(v), // answered with books
+            Some(Ok(_)) => {}                              // answered, no hits (or nothing to browse)
+            Some(Err(e)) => { first_err.get_or_insert(e); missing.push(*name); }
+            None => missing.push(*name),                   // still fetching past the deadline
         }
     }
     if lists.is_empty() {
-        return Job::List(Err(missing.first().map(|m| m.1.clone()).unwrap_or_default()), None);
+        let msg = first_err.unwrap_or_else(|| "No source answered. Check your Wi-Fi and try again.".into());
+        return Job::List(Err(msg), None);
     }
     let items = books::merge_results(&lists, q.as_deref().unwrap_or("")).into_iter().map(|(_, f)| f).collect();
-    let note = (!missing.is_empty()).then(|| format!("{} didn't answer", missing.iter().map(|m| m.0).collect::<Vec<_>>().join(", ")));
+    let note = (!missing.is_empty()).then(|| format!("{} didn't answer", missing.join(", ")));
     Job::List(Ok(items), note)
 }
 
@@ -188,6 +231,70 @@ fn gutenberg(query: Option<&str>) -> Result<Vec<Item>, String> {
 
 fn standard_ebooks(query: Option<&str>) -> Result<Vec<Item>, String> {
     books::parse_standard_ebooks(&http_get(&books::standard_ebooks_url(query))?)
+}
+
+/// Wikisource, in English. With no query there's nothing to browse, so show nothing.
+fn wikisource(query: Option<&str>) -> Result<Vec<Item>, String> {
+    let Some(q) = query.filter(|q| !q.is_empty()) else { return Ok(vec![]) };
+    books::parse_wikisource("en", &http_get(&books::wikisource_search_url("en", q))?)
+}
+
+/// The Internet Archive's public-domain EPUBs. Online search only.
+fn internet_archive(query: Option<&str>) -> Result<Vec<Item>, String> {
+    let Some(q) = query.filter(|q| !q.is_empty()) else { return Ok(vec![]) };
+    books::parse_archive(&http_get(&books::archive_search_url(q))?)
+}
+
+/// Project Gutenberg Australia: search the catalogue kept on the device.
+fn gutenberg_australia(cache: &str, query: Option<&str>) -> Result<Vec<Item>, String> {
+    let Some(q) = query.filter(|q| !q.is_empty()) else { return Ok(vec![]) };
+    let text = cached(cache, "gutenberg-australia.txt", || http_get(books::PGA_INDEX_URL))?;
+    Ok(books::search_catalog(&books::parse_pga_index(&text), q, 80))
+}
+
+/// Faded Page (Canada): search the catalogue kept on the device.
+fn faded_page(cache: &str, query: Option<&str>) -> Result<Vec<Item>, String> {
+    let Some(q) = query.filter(|q| !q.is_empty()) else { return Ok(vec![]) };
+    let text = cached(cache, "faded-page.html", faded_page_fetch)?;
+    Ok(books::search_catalog(&books::parse_fadedpage_list(&text).0, q, 80))
+}
+
+/// Download every page of the Faded Page list and join them (the parser reads rows from anywhere).
+fn faded_page_fetch() -> Result<String, String> {
+    let mut all = http_get(&books::fadedpage_list_url(0))?;
+    let (_, total) = books::parse_fadedpage_list(&all);
+    let mut start = 250;
+    while start < total {
+        all.push_str(&http_get(&books::fadedpage_list_url(start))?);
+        start += 250;
+    }
+    Ok(all)
+}
+
+/// A catalogue file kept under the device's cache, rebuilt when missing or over a week old. If a
+/// refresh fails but an old copy is there, use the old copy (it beats nothing).
+fn cached(dir: &str, name: &str, build: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    let week = std::time::Duration::from_secs(7 * 24 * 3600);
+    let path = format!("{dir}/{name}");
+    let fresh = std::fs::metadata(&path).ok()
+        .and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < week);
+    if fresh {
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            return Ok(s);
+        }
+    }
+    match build() {
+        Ok(data) => {
+            let _ = std::fs::create_dir_all(dir);
+            let tmp = format!("{path}.part");
+            if std::fs::write(&tmp, &data).and_then(|_| std::fs::rename(&tmp, &path)).is_err() {
+                crate::sys::log(&format!("couldn't cache {name}"));
+            }
+            Ok(data)
+        }
+        Err(e) => std::fs::read_to_string(&path).map_err(|_| e),
+    }
 }
 
 pub fn safe_filename_ext(title: &str, author: &str, ext: &str) -> String {
@@ -264,14 +371,19 @@ impl GetBooks {
         self.downloads.push(Dl { dest, title: title.to_string(), slot, shown: (0, None) });
     }
 
-    fn load(&mut self) {
+    fn load(&mut self, sys: &Sys) {
         let (src, q) = (self.source, self.query.clone());
+        let cache = format!("{}/kos/cache", sys.us);
         self.items.clear();
         self.pager.page = 0;
         self.spawn(if src == Source::All && q.is_some() { "Searching all…" } else { "Loading…" }, move || match src {
             Source::Gutenberg => Job::List(gutenberg(q.as_deref()), None),
             Source::StandardEbooks => Job::List(standard_ebooks(q.as_deref()), None),
-            Source::All => search_all(q),
+            Source::Wikisource => Job::List(wikisource(q.as_deref()), None),
+            Source::InternetArchive => Job::List(internet_archive(q.as_deref()), None),
+            Source::GutenbergAustralia => Job::List(gutenberg_australia(&cache, q.as_deref()), None),
+            Source::FadedPage => Job::List(faded_page(&cache, q.as_deref()), None),
+            Source::All => search_all(q, cache),
         });
     }
 
@@ -285,9 +397,9 @@ impl App for GetBooks {
         "Get Books".into()
     }
 
-    fn on_show(&mut self, _sys: &mut Sys) {
+    fn on_show(&mut self, sys: &mut Sys) {
         if self.items.is_empty() && self.job.is_none() {
-            self.load();
+            self.load(sys);
         }
     }
 
@@ -303,6 +415,7 @@ impl App for GetBooks {
             (None, Source::All) => "New and popular free books".into(),
             (None, Source::Gutenberg) => "Most popular on Project Gutenberg".into(),
             (None, Source::StandardEbooks) => "Newest from Standard Ebooks".into(),
+            (None, s) => format!("Search {}", s.label()),
         };
         cx.bold(a.x0 + 16, a.y0 + 72, &heading, 18, BLACK, Anchor::LT);
         let docs = format!("{}/documents", sys.us);
@@ -318,7 +431,11 @@ impl App for GetBooks {
         }
         let items = &self.items;
         let downloads = &self.downloads;
-        let empty = if self.busy.is_some() { "" } else { "Nothing found" };
+        // the device-search and online-search sources have nothing to browse until you search
+        let search_only = !matches!(self.source, Source::All | Source::StandardEbooks | Source::Gutenberg);
+        let empty = if self.busy.is_some() { "" }
+            else if self.query.is_none() && search_only { "Type a search to find books here." }
+            else { "Nothing found" };
         self.pager.render(cx, Rect::new(a.x0, a.y0 + 102, a.x1, a.y1), items.len(), empty, |cx, r, i| {
             let it = &items[i];
             let path = format!("{docs}/{}", safe_filename(&it.title, &it.author));
@@ -457,7 +574,7 @@ impl App for GetBooks {
             T_SEARCH => {
                 let q = text.trim().to_string();
                 self.query = if q.is_empty() { None } else { Some(q) };
-                self.load();
+                self.load(sys);
                 Cmd::Redraw
             }
             T_DOWNLOAD => {
@@ -484,7 +601,7 @@ impl App for GetBooks {
             T_FILTER => {
                 // keep the search; only where it looks changes
                 self.source = Source::ALL.get(choice).copied().unwrap_or(Source::All);
-                self.load();
+                self.load(sys);
                 Cmd::Redraw
             }
             T_MORE => match choice {
@@ -493,7 +610,7 @@ impl App for GetBooks {
                     .with_message("Direct link to an .epub file")),
             },
             T_RETRY => {
-                self.load();
+                self.load(sys);
                 Cmd::Redraw
             }
             T_READ => match self.last_path.clone() {
