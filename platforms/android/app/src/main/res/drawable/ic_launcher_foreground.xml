@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An open book: two pages meeting at the spine. 108dp canvas, art inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#F3F1EC"
+        android:pathData="M54,40 C47,35 38,34 31,35 L31,71 C38,70 47,71 54,76 Z" />
+    <path android:fillColor="#E4E0D7"
+        android:pathData="M54,40 C61,35 70,34 77,35 L77,71 C70,70 61,71 54,76 Z" />
+    <path android:strokeColor="#141414" android:strokeWidth="1.4" android:strokeLineCap="round"
+        android:pathData="M36,44 L49,45.5 M36,50 L49,51.5 M36,56 L49,57.5 M36,62 L46,63 M59,45.5 L72,44 M59,51.5 L72,50 M59,57.5 L72,56" />
+</vector>

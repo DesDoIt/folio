@@ -1,0 +1,132 @@
+# Build Folio for every platform when a GitHub release is published, and attach the results to it:
+#   Folio-<version>.apk           the Android app, signed with the release key
+#   Folio-OS-<version>-kindle.zip  Folio OS: unzip onto the Kindle's USB drive (kos/ and documents/)
+#
+# Tags look like v0.2.0. The Android version name comes from the tag (0.2.0) and the version code
+# from its numbers (0.2.0 -> 2000, 1.4.12 -> 1004012), so every release installs over the last one.
+#
+# Signing the APK needs these repository secrets (Settings > Secrets and variables > Actions):
+#   ANDROID_KEYSTORE_BASE64   base64 of the .jks file    (base64 -i folio-release.jks | pbcopy)
+#   ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASSWORD
+# It must be the same key as earlier releases, or phones refuse the update.
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach to (e.g. v0.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Version from the tag
+        run: |
+          v="${TAG#v}"
+          IFS=. read -r major minor patch <<EOF
+          ${v%%-*}
+          EOF
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$(( ${major:-0} * 1000000 + ${minor:-0} * 1000 + ${patch:-0} ))" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Android NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-ndk --locked
+      - name: Release key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            echo "::error::The ANDROID_KEYSTORE_BASE64 secret is not set; see the top of release.yml"
+            exit 1
+          fi
+          echo "$KEYSTORE" | base64 -d > platforms/android/release.jks
+          cat > platforms/android/keystore.properties <<EOF
+          storeFile=release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+      - name: Build
+        working-directory: platforms/android
+        run: ./gradlew assembleRelease -PfolioVersionName="$VERSION" -PfolioVersionCode="$VERSION_CODE"
+      - name: Check the signature
+        run: |
+          apk=platforms/android/app/build/outputs/apk/release/app-release.apk
+          certs=$("$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify --print-certs "$apk")
+          echo "$certs" | head -3
+          if echo "$certs" | grep -q "CN=Android Debug"; then echo "::error::signed with the debug key"; exit 1; fi
+          cp "$apk" "Folio-$VERSION.apk"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "Folio-$VERSION.apk" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Remove the key
+        if: always()
+        run: rm -f platforms/android/release.jks platforms/android/keystore.properties
+
+  kindle:
+    needs: test
+    # build.sh runs arm64 containers (as on Apple Silicon); an arm64 runner runs them natively
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build Folio OS
+        run: platforms/kindle/build/build.sh
+      - name: Package
+        run: |
+          v="${TAG#v}"
+          d=Folio-OS-$v-kindle
+          mkdir -p "$d/kos" "$d/documents"
+          cp out/kos-rootfs.sqsh out/kos platforms/kindle/host/kos-launch.sh platforms/kindle/host/kos-boot.sh \
+             platforms/kindle/host/folio.conf "$d/kos/"
+          cp platforms/kindle/host/Folio.sh platforms/kindle/host/Folio-BootOn.sh platforms/kindle/host/Folio-BootOff.sh \
+             "$d/documents/"
+          cp platforms/kindle/INSTALL.md LICENSE THIRD_PARTY_LICENSES.md "$d/"
+          (cd "$d" && zip -r "../$d.zip" .)
+          echo "ZIP=$d.zip" >> "$GITHUB_ENV"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ZIP" --clobber --repo "$GITHUB_REPOSITORY"

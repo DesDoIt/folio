@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Back up reading positions, bookmarks and settings; book files and covers can be re-imported. -->
+<full-backup-content>
+    <exclude domain="file" path="books/" />
+    <exclude domain="file" path="covers/" />
+</full-backup-content>

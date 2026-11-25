@@ -1,0 +1,14 @@
+[package]
+name = "kos"
+description = "Folio: the e-ink device build (touch GUI for jailbroken Kindles running Alpine Linux)"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/DesDoIt/kindle-linux"
+
+[dependencies]
+engine = { path = "../../engine" }
+libc = "0.2"
+vte = "0.13"
+png = "0.17"

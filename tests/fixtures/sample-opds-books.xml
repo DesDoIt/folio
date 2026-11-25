@@ -3,7 +3,7 @@
   <title>Recently added</title>
   <entry>
     <title>A Sample Book (from the catalog)</title>
-    <author><name>Kindle Linux</name></author>
+    <author><name>Folio</name></author>
     <link type="application/x-mobipocket-ebook" rel="http://opds-spec.org/acquisition" href="missing.mobi"/>
     <link type="application/epub+zip" rel="http://opds-spec.org/acquisition" href="sample.epub"/>
   </entry>
