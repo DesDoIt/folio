@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon: the open book, as a white silhouette. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,6.2C10.2,4.9 7.7,4.6 5,4.9L5,17.6C7.7,17.3 10.2,17.7 12,19.1ZM12,6.2C13.8,4.9 16.3,4.6 19,4.9L19,17.6C16.3,17.3 13.8,17.7 12,19.1Z" />
+</vector>

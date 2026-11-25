@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Home library servers (Calibre's content server and other OPDS catalogs) usually speak plain
+     HTTP on the local network, and some news feeds still do; HTTPS sites keep the system's normal
+     certificate checks. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

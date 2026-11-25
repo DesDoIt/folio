@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Folio" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+    <color name="paper">#F3F1EC</color>
+    <color name="ink">#141414</color>
+    <color name="accent">#141414</color>
+</resources>
