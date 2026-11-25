@@ -1,0 +1,15 @@
+[package]
+name = "engine"
+description = "Platform-neutral ebook engine: formats, fonts and shaping, hyphenation, pagination and page rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fontdue = "0.9"
+ab_glyph = "0.2"
+rustybuzz = "0.20"
+png = "0.17"
+miniz_oxide = "0.8"
+zune-jpeg = "0.4"
+zune-core = "0.4"

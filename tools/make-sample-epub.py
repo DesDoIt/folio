@@ -63,7 +63,7 @@ with zipfile.ZipFile(out, "w") as z:
     z.writestr("OEBPS/content.opf", f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">sample</dc:identifier>
-<dc:title>A Sample Book</dc:title><dc:creator>Kindle Linux</dc:creator><dc:language>en</dc:language></metadata>
+<dc:title>A Sample Book</dc:title><dc:creator>Sample Author</dc:creator><dc:language>en</dc:language></metadata>
 <manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
 {items}</manifest><spine>{spine}</spine></package>""")
     links = "\n".join(f'<li><a href="text/ch{i}.xhtml">{t}</a></li>' for i, t in enumerate(titles))
